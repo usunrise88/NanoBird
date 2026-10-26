@@ -45,6 +45,12 @@ func CollectWith(s Stream, sink Sink) (Reply, error) {
 			r.Finish = ev.Final.FinishReason
 			r.Calls = ev.Final.ToolCalls
 			r.Usage = ev.Final.Usage
+			if p := ev.Final.Parse; p != nil && p.Status == "failed" {
+				// The engine read no calls: the reply is its text, from which the caller
+				// reads the calls itself (the rescue of mechanism M5).
+				r.Text = p.Raw
+				r.Calls = nil
+			}
 			return r, nil
 		case ev.Text != "":
 			r.Text += ev.Text

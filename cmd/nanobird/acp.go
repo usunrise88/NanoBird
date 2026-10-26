@@ -15,7 +15,6 @@ import (
 	"github.com/usunrise88/nanobird/internal/loop"
 	"github.com/usunrise88/nanobird/internal/mcp"
 	"github.com/usunrise88/nanobird/internal/mech"
-	"github.com/usunrise88/nanobird/internal/model/openai"
 )
 
 // acpCommand is `nanobird acp` (SPEC §8): an ACP agent over stdio. The client gives
@@ -112,7 +111,7 @@ type sessionRunner struct {
 	root   string
 	cfg    config.Config
 	flags  *engineFlags
-	client *openai.Client
+	client engineClient
 }
 
 // Offline is the offline option of the session.
