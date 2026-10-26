@@ -34,6 +34,15 @@ type Runner interface {
 	// Notices are the things the client should hear about the session before its
 	// first prompt, such as an MCP server that did not start (SPEC §8.3).
 	Notices() []string
+	// Offline is the offline option: web tools and URL servers are not assembled
+	// (SPEC §8.4). SetOffline changes it, and the MCP servers start again.
+	Offline() bool
+	SetOffline(offline bool) error
+	// Model is the engine's model name. Models lists the names the engine serves, and
+	// SetModel changes the model of the prompts that follow (SPEC §8.4).
+	Model() string
+	SetModel(name string) error
+	Models(ctx context.Context) ([]string, error)
 	// Thinking is the thinking policy of the next prompts: off, plan or on.
 	Thinking() string
 	// SetThinking sets the thinking policy of the next prompts (SPEC §4.5, §8.4).
@@ -88,6 +97,12 @@ type activeSession struct {
 	prompted bool
 	// notices are sent as messages before the first prompt runs.
 	notices []string
+	// offline and model are the settings for the next prompt. applied holds the
+	// values the runner has, so that only a change reaches it.
+	offline, appliedOffline bool
+	model, appliedModel     string
+	// models are the model names the engine serves, when it lists them.
+	models []string
 }
 
 // thinkingValues are the values of the thinking option (SPEC §4.5, §8.4).
@@ -137,7 +152,7 @@ func (a *Agent) NewSession(_ context.Context, p sdk.NewSessionRequest) (sdk.NewS
 	if err != nil {
 		return sdk.NewSessionResponse{}, err
 	}
-	return sdk.NewSessionResponse{SessionId: s.id, Modes: modeState(s.currentMode()), ConfigOptions: configOptions(s.currentThinking())}, nil
+	return sdk.NewSessionResponse{SessionId: s.id, Modes: modeState(s.currentMode()), ConfigOptions: s.options()}, nil
 }
 
 // LoadSession continues a session of the workspace, and replays its history to the
@@ -152,7 +167,7 @@ func (a *Agent) LoadSession(_ context.Context, p sdk.LoadSessionRequest) (sdk.Lo
 		return sdk.LoadSessionResponse{}, sdk.NewInternalError(err.Error())
 	}
 	s.obs.replay(entries)
-	return sdk.LoadSessionResponse{Modes: modeState(s.currentMode()), ConfigOptions: configOptions(s.currentThinking())}, nil
+	return sdk.LoadSessionResponse{Modes: modeState(s.currentMode()), ConfigOptions: s.options()}, nil
 }
 
 // ResumeSession continues a session of the workspace without replaying its history
@@ -162,7 +177,7 @@ func (a *Agent) ResumeSession(_ context.Context, p sdk.ResumeSessionRequest) (sd
 	if err != nil {
 		return sdk.ResumeSessionResponse{}, err
 	}
-	return sdk.ResumeSessionResponse{Modes: modeState(s.currentMode()), ConfigOptions: configOptions(s.currentThinking())}, nil
+	return sdk.ResumeSessionResponse{Modes: modeState(s.currentMode()), ConfigOptions: s.options()}, nil
 }
 
 // ListSessions lists the sessions of the workspace at cwd, each with its first task
@@ -223,6 +238,9 @@ func (a *Agent) Prompt(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResp
 		return sdk.PromptResponse{}, sdk.NewInvalidRequest("the session cannot take a prompt now: one is running, or it is closing")
 	}
 	defer s.end()
+	if err := s.applyConfig(); err != nil {
+		return sdk.PromptResponse{}, sdk.NewInternalError(err.Error())
+	}
 	for _, n := range s.takeNotices() {
 		s.obs.send(sdk.UpdateAgentMessageText(n))
 	}
@@ -284,11 +302,22 @@ func (a *Agent) Logout(context.Context, sdk.LogoutRequest) (sdk.LogoutResponse, 
 	return sdk.LogoutResponse{}, sdk.NewMethodNotFound("logout")
 }
 
-// SetSessionConfigOption sets the thinking option of a session: off, plan or on. It
-// applies from the next prompt (SPEC §4.5, §8.4). The answer lists the options with
-// the value now set.
+// SetSessionConfigOption sets a config option of a session (SPEC §8.4): thinking
+// (off, plan or on), model, or offline. A value applies from the next prompt. The
+// answer lists the options with the values now set.
 func (a *Agent) SetSessionConfigOption(_ context.Context, p sdk.SetSessionConfigOptionRequest) (sdk.SetSessionConfigOptionResponse, error) {
-	if p.ValueId == nil || p.ValueId.ConfigId != "thinking" {
+	if p.Boolean != nil {
+		if p.Boolean.ConfigId != "offline" {
+			return sdk.SetSessionConfigOptionResponse{}, sdk.NewInvalidParams("no such config option")
+		}
+		s, err := a.session(p.Boolean.SessionId)
+		if err != nil {
+			return sdk.SetSessionConfigOptionResponse{}, err
+		}
+		s.setOffline(p.Boolean.Value)
+		return sdk.SetSessionConfigOptionResponse{ConfigOptions: s.options()}, nil
+	}
+	if p.ValueId == nil {
 		return sdk.SetSessionConfigOptionResponse{}, sdk.NewInvalidParams("no such config option")
 	}
 	s, err := a.session(p.ValueId.SessionId)
@@ -296,11 +325,20 @@ func (a *Agent) SetSessionConfigOption(_ context.Context, p sdk.SetSessionConfig
 		return sdk.SetSessionConfigOptionResponse{}, err
 	}
 	value := string(p.ValueId.Value)
-	if !slices.Contains(thinkingValues, value) {
-		return sdk.SetSessionConfigOptionResponse{}, sdk.NewInvalidParams("no such thinking value: " + value)
+	switch p.ValueId.ConfigId {
+	case "thinking":
+		if !slices.Contains(thinkingValues, value) {
+			return sdk.SetSessionConfigOptionResponse{}, sdk.NewInvalidParams("no such thinking value: " + value)
+		}
+		s.setThinking(value)
+	case "model":
+		if err := s.setModel(value); err != nil {
+			return sdk.SetSessionConfigOptionResponse{}, err
+		}
+	default:
+		return sdk.SetSessionConfigOptionResponse{}, sdk.NewInvalidParams("no such config option")
 	}
-	s.setThinking(value)
-	return sdk.SetSessionConfigOptionResponse{ConfigOptions: configOptions(value)}, nil
+	return sdk.SetSessionConfigOptionResponse{ConfigOptions: s.options()}, nil
 }
 
 // SetSessionMode sets the mode of the session's prompts: auto, chat or task (SPEC
@@ -327,7 +365,13 @@ func (a *Agent) start(cwd, id string) (*activeSession, error) {
 	if err != nil {
 		return nil, sdk.NewInternalError(err.Error())
 	}
-	s := &activeSession{id: sdk.SessionId(runner.ID()), runner: runner, obs: obs, mode: "auto", thinking: runner.Thinking(), titled: id != "", notices: runner.Notices()}
+	s := &activeSession{
+		id: sdk.SessionId(runner.ID()), runner: runner, obs: obs, mode: "auto",
+		thinking: runner.Thinking(), titled: id != "", notices: runner.Notices(),
+		offline: runner.Offline(), appliedOffline: runner.Offline(),
+		model: runner.Model(), appliedModel: runner.Model(),
+		models: listModels(runner),
+	}
 	obs.id = s.id
 	a.mu.Lock()
 	a.sessions[s.id] = s
@@ -467,20 +511,98 @@ func (s *activeSession) claimTitle() bool {
 	return true
 }
 
-// configOptions are the config options of a session (SPEC §8.4). Thinking is the
-// one that this agent offers so far.
-func configOptions(thinking string) []sdk.SessionConfigOption {
+// configOptions are the config options of a session (SPEC §8.4): thinking, offline,
+// and the model when the engine lists its models.
+func configOptions(thinking string, offline bool, model string, models []string) []sdk.SessionConfigOption {
 	values := sdk.SessionConfigSelectOptionsUngrouped{
 		{Name: "Off", Value: "off"},
 		{Name: "Plan", Value: "plan"},
 		{Name: "On", Value: "on"},
 	}
-	opt := sdk.NewSessionConfigOptionSelect(sdk.SessionConfigValueId(thinking), sdk.SessionConfigSelectOptions{Ungrouped: &values})
-	opt.Select.Id = "thinking"
-	opt.Select.Name = "Thinking"
+	think := sdk.NewSessionConfigOptionSelect(sdk.SessionConfigValueId(thinking), sdk.SessionConfigSelectOptions{Ungrouped: &values})
+	think.Select.Id = "thinking"
+	think.Select.Name = "Thinking"
 	desc := "Whether the model thinks: off, on for every turn, or plan, which thinks on the first turn and after a finish rejection (SPEC §4.5)."
-	opt.Select.Description = &desc
-	return []sdk.SessionConfigOption{opt}
+	think.Select.Description = &desc
+	opts := []sdk.SessionConfigOption{think}
+
+	local := sdk.NewSessionConfigOptionBoolean(offline)
+	local.Boolean.Id = "offline"
+	local.Boolean.Name = "Offline"
+	opts = append(opts, local)
+
+	if len(models) > 0 {
+		var names sdk.SessionConfigSelectOptionsUngrouped
+		for _, m := range models {
+			names = append(names, sdk.SessionConfigSelectOption{Name: m, Value: sdk.SessionConfigValueId(m)})
+		}
+		pick := sdk.NewSessionConfigOptionSelect(sdk.SessionConfigValueId(model), sdk.SessionConfigSelectOptions{Ungrouped: &names})
+		pick.Select.Id = "model"
+		pick.Select.Name = "Model"
+		opts = append(opts, pick)
+	}
+	return opts
+}
+
+// listModels asks the engine for its model names. A failure leaves the option out.
+func listModels(r Runner) []string {
+	ctx, cancel := context.WithTimeout(context.Background(), modelListWait)
+	defer cancel()
+	models, err := r.Models(ctx)
+	if err != nil {
+		return nil
+	}
+	return models
+}
+
+// modelListWait bounds the wait for the engine's model names when a session opens.
+const modelListWait = 5 * time.Second
+
+// options are the config options of the session, with the values it has now.
+func (s *activeSession) options() []sdk.SessionConfigOption {
+	s.mu.Lock()
+	thinking, offline, model, models := s.thinking, s.offline, s.model, s.models
+	s.mu.Unlock()
+	return configOptions(thinking, offline, model, models)
+}
+
+// setOffline and setModel set the options for the next prompt. A model must be one
+// that the engine serves, when it lists them.
+func (s *activeSession) setOffline(offline bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.offline = offline
+}
+
+func (s *activeSession) setModel(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.models) > 0 && !slices.Contains(s.models, name) {
+		return sdk.NewInvalidParams("no such model: " + name)
+	}
+	s.model = name
+	return nil
+}
+
+// applyConfig gives the runner the settings that changed since the last prompt, so
+// the next prompt runs with them (SPEC §8.4). Only the prompt goroutine calls it.
+func (s *activeSession) applyConfig() error {
+	s.mu.Lock()
+	offline, model := s.offline, s.model
+	s.mu.Unlock()
+	if offline != s.appliedOffline {
+		if err := s.runner.SetOffline(offline); err != nil {
+			return err
+		}
+		s.appliedOffline = offline
+	}
+	if model != s.appliedModel {
+		if err := s.runner.SetModel(model); err != nil {
+			return err
+		}
+		s.appliedModel = model
+	}
+	return nil
 }
 
 // modeState is the modes of a session, with the one it runs in.
