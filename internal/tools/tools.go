@@ -16,6 +16,8 @@ import (
 // Env is what the tools act on: the workspace, the shell, the clock and the
 // safety settings of the run.
 type Env struct {
+	// crawl counts the reads of each file in the task (SPEC §6.3).
+	crawl map[string]*crawlFile
 	// Permit asks the client whether a call that a safety ring stopped may run
 	// (SPEC §5.11, §8.5). Nil means nobody can be asked, and the call is denied.
 	Permit func(ctx context.Context, p Permission) Answer

@@ -84,10 +84,11 @@ func runReadFile(ctx context.Context, env *Env, args json.RawMessage) (string, e
 	for i := first - 1; i < last; i++ {
 		fmt.Fprintf(&b, "%6d\t%s\n", i+1, strings.TrimSuffix(lines[i], "\r"))
 	}
+	trailer := ""
 	if last < len(lines) {
-		fmt.Fprintf(&b, "[showing lines %d-%d of %d; use offset to read the rest]\n", first, last, len(lines))
+		trailer = fmt.Sprintf("[showing lines %d-%d of %d; use offset to read the rest]\n", first, last, len(lines))
 	}
-	return b.String(), nil
+	return env.crawlRead(a.Path, len(data), b.String(), trailer), nil
 }
 
 var listDirTool = Tool{
