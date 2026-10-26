@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	sdk "github.com/coder/acp-go-sdk"
 	"github.com/usunrise88/nanobird/internal/loop"
+	"github.com/usunrise88/nanobird/internal/mech"
 	"github.com/usunrise88/nanobird/internal/model/fake"
 	"github.com/usunrise88/nanobird/internal/prefill"
 	"github.com/usunrise88/nanobird/internal/safety"
@@ -207,6 +209,15 @@ func (r *loopRunner) Thinking() string { return r.lp.Thinking() }
 
 func (r *loopRunner) SetThinking(mode string) { r.lp.SetThinking(mode) }
 
+func (r *loopRunner) SetAblation(mechanisms []string) error {
+	sw, err := mech.Parse(strings.Join(mechanisms, ","))
+	if err != nil {
+		return err
+	}
+	r.lp.SetSwitches(sw)
+	return nil
+}
+
 func (r *loopRunner) Close() { _ = r.log.Close() }
 
 // stubRunner is a Runner whose prompt is the function it was given.
@@ -223,6 +234,8 @@ func (s stubRunner) SetMode(string) {}
 func (s stubRunner) Thinking() string { return "off" }
 
 func (s stubRunner) SetThinking(string) {}
+
+func (s stubRunner) SetAblation([]string) error { return nil }
 
 func (s stubRunner) Close() {}
 
@@ -586,4 +599,59 @@ func contains(kinds []string, kind string) bool {
 		}
 	}
 	return false
+}
+
+func TestRefusedRepeatCarriesItsMechanism(t *testing.T) {
+	var replies []fake.Reply
+	for i := 1; i <= 6; i++ {
+		replies = append(replies, listDir(fmt.Sprintf("call_%d", i)))
+	}
+	replies = append(replies, finishWith("done"), finishWith("done"))
+	f := newFixture(t, loopOpen(fake.New(replies...)))
+	id := f.newSession(t)
+	f.prompt(t, id, "List it six times.")
+	for _, u := range f.rec.updates {
+		if u.ToolCallUpdate == nil {
+			continue
+		}
+		if nb, ok := u.ToolCallUpdate.Meta["nanobird"].(map[string]any); ok && nb["mechanism"] == "anti_loop" {
+			return
+		}
+	}
+	t.Fatal("the refused call carried no mechanism metadata")
+}
+
+func TestStatsReportTheSession(t *testing.T) {
+	client := fake.New(listDir("call_1"), finishWith("done"), finishWith("done"))
+	f := newFixture(t, loopOpen(client))
+	id := f.newSession(t)
+	f.prompt(t, id, "Look.")
+	raw, err := f.conn.CallExtension(context.Background(), "_nanobird/stats", map[string]any{"sessionId": id})
+	if err != nil {
+		t.Fatalf("_nanobird/stats: %v", err)
+	}
+	var st struct {
+		Turns     int64 `json:"turns"`
+		ToolCalls int64 `json:"toolCalls"`
+	}
+	if err := json.Unmarshal(raw, &st); err != nil || st.Turns < 1 || st.ToolCalls < 1 {
+		t.Fatalf("stats = %s, %v", raw, err)
+	}
+}
+
+func TestAblationIsSetBeforeThePrompt(t *testing.T) {
+	client := fake.New(listDir("call_1"), finishWith("done"), finishWith("done"))
+	f := newFixture(t, loopOpen(client))
+	id := f.newSession(t)
+	ctx := context.Background()
+	if _, err := f.conn.CallExtension(ctx, "_nanobird/ablation", map[string]any{"sessionId": id, "mechanisms": []string{"anti_loop"}}); err != nil {
+		t.Fatalf("ablation before the prompt: %v", err)
+	}
+	if _, err := f.conn.CallExtension(ctx, "_nanobird/ablation", map[string]any{"sessionId": id, "mechanisms": []string{"no_such_mechanism"}}); err == nil {
+		t.Fatal("an unknown mechanism was accepted")
+	}
+	f.prompt(t, id, "Look.")
+	if _, err := f.conn.CallExtension(ctx, "_nanobird/ablation", map[string]any{"sessionId": id, "mechanisms": []string{}}); err == nil {
+		t.Fatal("the ablation changed after a prompt ran")
+	}
 }

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	sdk "github.com/coder/acp-go-sdk"
 	"github.com/usunrise88/nanobird/internal/model"
@@ -22,6 +24,33 @@ type updates struct {
 	streamed strings.Builder
 	// call is the id of the tool call that runs, which a permission request names.
 	call string
+	// meta is the nanobird metadata of the call that runs: the first mechanism that
+	// changed it (SPEC §8.8).
+	meta map[string]any
+	// The counters of the session, which _nanobird/stats reports (SPEC §8.8).
+	calls, firings, turns, tokens atomic.Int64
+	started                       time.Time
+}
+
+// Mechanism notes a mechanism that changed the call that runs, so that its update
+// carries the mechanism and its rung in _meta.nanobird (SPEC §8.8). The first one
+// is kept.
+func (u *updates) Mechanism(id string, rung int) {
+	u.firings.Add(1)
+	if u.meta == nil {
+		u.meta = map[string]any{"nanobird": map[string]any{"mechanism": id, "rung": rung}}
+	}
+}
+
+// stats are the counters of the session, as _nanobird/stats reports them.
+func (u *updates) stats() map[string]any {
+	return map[string]any{
+		"turns":            u.turns.Load(),
+		"toolCalls":        u.calls.Load(),
+		"mechanismFirings": u.firings.Load(),
+		"tokens":           u.tokens.Load(),
+		"wallTimeMs":       time.Since(u.started).Milliseconds(),
+	}
 }
 
 // Reasoning sends a piece of the model's thinking as it streams (SPEC §8.3).
@@ -32,6 +61,8 @@ func (u *updates) Reasoning(piece string) {
 // Usage reports the tokens of the last reply and the size of the context they count
 // against (SPEC §8.3).
 func (u *updates) Usage(used, size int) {
+	u.turns.Add(1)
+	u.tokens.Add(int64(used))
 	u.send(sdk.SessionUpdate{UsageUpdate: &sdk.SessionUsageUpdate{Used: used, Size: size, SessionUpdate: "usage_update"}})
 }
 
@@ -68,6 +99,8 @@ func (u *updates) Text(piece string) {
 // ToolCall reports a call as in progress. The loop runs it, unless a guard refuses
 // it, and then ToolDone says so.
 func (u *updates) ToolCall(call model.ToolCall) {
+	u.calls.Add(1)
+	u.meta = nil
 	u.call = call.ID
 	a := argsOf(call)
 	opts := []sdk.ToolCallStartOpt{
@@ -93,11 +126,15 @@ func (u *updates) ToolDone(call model.ToolCall, ok bool, output string) {
 	} else if diff, found := u.diffOf(call); found {
 		content = []sdk.ToolCallContent{diff}
 	}
-	u.send(sdk.UpdateToolCall(sdk.ToolCallId(call.ID),
+	upd := sdk.UpdateToolCall(sdk.ToolCallId(call.ID),
 		sdk.WithUpdateStatus(status),
 		sdk.WithUpdateContent(content),
 		sdk.WithUpdateRawOutput(output),
-	))
+	)
+	if u.meta != nil && upd.ToolCallUpdate != nil {
+		upd.ToolCallUpdate.Meta = u.meta
+	}
+	u.send(upd)
 }
 
 // Plan mirrors the todo list: a done item is completed, and the others are pending.
