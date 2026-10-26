@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -118,9 +119,7 @@ func (l *Loop) Resume(ctx context.Context) Result {
 		l.env.Enabled = map[string]bool{}
 	}
 	l.write("resume", resumeRecord{FromTurn: cp.Turn})
-	res := l.run(ctx, st, cp.Turn+1)
-	l.history = st.msgs
-	return res
+	return l.keep(st, l.run(ctx, st, cp.Turn+1))
 }
 
 // readCheckpoint loads the checkpoint of a session directory.
@@ -173,4 +172,36 @@ func messagesOf(saved []savedMessage) []model.Message {
 		out = append(out, m)
 	}
 	return out
+}
+
+// keep records the end of a run. The conversation becomes the one that the next
+// prompt continues. A run that ended with its finish is checkpointed as it stands,
+// so the conversation survives a restart: the checkpoints written during a run
+// stop before its last turn (SPEC §8.2, §9.3).
+func (l *Loop) keep(st *state, res Result) Result {
+	l.history = st.msgs
+	if res.Stop == StopEndTurn {
+		l.checkpoint(st, res.Turns)
+	}
+	return res
+}
+
+// Restore takes the conversation of the session from its last checkpoint, so that
+// the next prompt continues it, without running a turn (SPEC §8.2). A session with
+// no checkpoint has nothing to take.
+func (l *Loop) Restore() error {
+	if _, err := os.Stat(filepath.Join(l.log.Dir(), checkpointFile)); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	cp, err := readCheckpoint(l.log.Dir())
+	if err != nil {
+		return err
+	}
+	l.history = messagesOf(cp.Messages)
+	l.env.Plan.Items = cp.Plan
+	l.env.Enabled = cp.Enabled
+	if l.env.Enabled == nil {
+		l.env.Enabled = map[string]bool{}
+	}
+	return nil
 }
