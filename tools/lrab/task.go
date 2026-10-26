@@ -19,6 +19,8 @@ type Task struct {
 	Fixtures       []string `json:"fixtures"`
 	Prompt         string   `json:"prompt"`
 	MaxWallMinutes int      `json:"max_wall_minutes"`
+	ResumeTest     bool     `json:"resume_test"`
+	KillAtPct      int      `json:"kill_at_pct"`
 
 	// File is the task file on disk, which the scorer reads.
 	File string `json:"-"`

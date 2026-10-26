@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,14 +23,17 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// fakeAgent is an ACP agent for the runner's tests. In "block" mode its prompt waits
-// for the cancel. In "finish" mode it reports two mechanism firings and ends the turn.
+// fakeAgent is an ACP agent for the runner's tests. In "block" mode its prompt waits for
+// the cancel. In "finish" mode it reports two mechanism firings and ends the turn. In
+// "resume" mode a new session blocks, as an agent does until it is killed, and a resumed
+// session ends its turn.
 type fakeAgent struct {
 	sdk.Agent // only the methods below are used
 	mode      string
 	conn      *sdk.AgentSideConnection
 	cancel    chan struct{}
 	once      sync.Once
+	resumed   atomic.Bool
 }
 
 func (f *fakeAgent) Initialize(context.Context, sdk.InitializeRequest) (sdk.InitializeResponse, error) {
@@ -40,8 +44,13 @@ func (f *fakeAgent) NewSession(context.Context, sdk.NewSessionRequest) (sdk.NewS
 	return sdk.NewSessionResponse{SessionId: "fake-session"}, nil
 }
 
+func (f *fakeAgent) ResumeSession(context.Context, sdk.ResumeSessionRequest) (sdk.ResumeSessionResponse, error) {
+	f.resumed.Store(true)
+	return sdk.ResumeSessionResponse{}, nil
+}
+
 func (f *fakeAgent) Prompt(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResponse, error) {
-	if f.mode == "finish" {
+	if f.mode == "finish" || (f.mode == "resume" && f.resumed.Load()) {
 		for i := 0; i < 2; i++ {
 			update := sdk.SessionToolCallUpdate{
 				ToolCallId: sdk.ToolCallId("call"),
@@ -61,14 +70,14 @@ func (f *fakeAgent) Prompt(ctx context.Context, p sdk.PromptRequest) (sdk.Prompt
 	return sdk.PromptResponse{StopReason: sdk.StopReasonCancelled}, nil
 }
 
-// HandleExtensionMethod answers the stats that the cell asks for at its end.
-func (f *fakeAgent) HandleExtensionMethod(context.Context, string, json.RawMessage) (any, error) {
-	return map[string]any{"calls": 2}, nil
-}
-
 func (f *fakeAgent) Cancel(context.Context, sdk.CancelNotification) error {
 	f.once.Do(func() { close(f.cancel) })
 	return nil
+}
+
+// HandleExtensionMethod answers the stats that a cell asks for at its end.
+func (f *fakeAgent) HandleExtensionMethod(context.Context, string, json.RawMessage) (any, error) {
+	return map[string]any{"calls": 2}, nil
 }
 
 func serveFakeAgent(mode string) {
@@ -150,6 +159,32 @@ func TestMechanismEventsAreCounted(t *testing.T) {
 	}
 	if c.TimedOut || c.Stop != "end_turn" || c.Error != "" || c.Firings["anti_loop"] != 2 || c.Score != nil {
 		t.Fatalf("cell = %+v, want end_turn with two anti_loop firings and no score (the scorer is off)", c)
+	}
+}
+
+func TestAResumeTestKillsTheAgentAndResumesIt(t *testing.T) {
+	t.Setenv("LRAB_FAKE_AGENT", "resume")
+	cfg := cellConfig{agent: []string{os.Args[0]}, root: fixtureRoot(t), budget: 2 * time.Second, out: t.TempDir()}
+	task := Task{ID: "LH-98", Prompt: "go", Fixtures: []string{"fixtures/a.txt"}, ResumeTest: true, KillAtPct: 50}
+	c, err := runCell(context.Background(), cfg, task, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Resumed || c.KilledAt < 0.9 || c.KilledAt > 1.1 || c.Stop != "end_turn" || c.TimedOut || c.Error != "" {
+		t.Fatalf("cell = %+v, want a kill at one second and a resumed end_turn", c)
+	}
+}
+
+func TestARunThatEndsBeforeTheKillPointIsNotResumed(t *testing.T) {
+	t.Setenv("LRAB_FAKE_AGENT", "finish")
+	cfg := cellConfig{agent: []string{os.Args[0]}, root: fixtureRoot(t), budget: 10 * time.Second, out: t.TempDir()}
+	task := Task{ID: "LH-97", Prompt: "go", Fixtures: []string{"fixtures/a.txt"}, ResumeTest: true}
+	c, err := runCell(context.Background(), cfg, task, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Resumed || c.Stop != "end_turn" || c.KilledAt != 0 {
+		t.Fatalf("cell = %+v, want one attempt that ends before the kill point", c)
 	}
 }
 

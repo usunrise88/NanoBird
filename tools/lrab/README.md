@@ -33,13 +33,13 @@ The held-out tasks are not vendored. SPEC §12 reserves them for gate G4. Credit
 
 ## Choices the spec leaves open
 
-- **Budgets.** SPEC §10.1 sets 90 minutes for a workflow cell and 180 for a long-horizon cell. The task files give `max_wall_minutes` as 60 and 90. The runner uses the spec's numbers. Check which ones LRAB intends before a published run.
+- **Budgets.** SPEC §10.1 sets 90 minutes for a workflow cell and 180 for a long-horizon cell. The task files still give `max_wall_minutes` as 60 and 90, but those were authoring-time values. Mingbird's protocol freeze raised them to 90 and 180 (`benchmarks/DESIGN.md` in Mingbird), and the runner uses that protocol.
 - **Permissions.** Requests are rejected by default, as an unattended `nanobird run` rejects them. ACP and headless runs then share one policy (SPEC §12, G2).
 - **Timeouts.** A timeout cancels the prompt, waits up to 30 seconds for the stop, and scores 0 (SPEC §10.1).
 - **Judge.** Off. The judge would call a model server, and the runs use no Ollama. The scorer renormalizes its weights without the judge.
 - **Audit.** The agent's `.nanobird/` folder moves out of the workdir before grading, so it does not count in the artifact checks (SPEC §10.1).
-- **Not run yet.** LH-03 carries a `resume_test`, which kills the agent and resumes it through `session/load`. SPEC §10.1 does not ask for it, so the runner does not run it.
+- **Resume test.** LH-03 carries a `resume_test`. The runner kills the agent at `kill_at_pct` of the budget (50 by default), starts it again in the same workdir, resumes the session with `session/resume`, and sends the task text again with the rest of the budget. The second attempt counts, as Mingbird's protocol says ("1 retry, latest attempt wins"). A run that ends before the kill point is not resumed.
 
 ## Tests
 
-`go test ./tools/lrab/` runs the runner against a fake ACP agent: the fixtures, the budgets, a timeout that cancels and scores 0, the mechanism counts, the summary, and the vendored scorer (skipped without `python3`).
+`go test ./tools/lrab/` runs the runner against a fake ACP agent: the fixtures, the budgets, a timeout that cancels and scores 0, the mechanism counts, the kill and resume of a resume-test cell, the summary, and the vendored scorer (skipped without `python3`).
