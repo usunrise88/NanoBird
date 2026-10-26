@@ -105,6 +105,7 @@ type mechanismRecord struct {
 	Event   string `json:"event"`
 	Attempt int    `json:"attempt,omitempty"`
 	Count   int    `json:"count,omitempty"`
+	Level   int    `json:"level,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
 

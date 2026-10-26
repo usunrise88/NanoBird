@@ -18,6 +18,8 @@ type Reply struct {
 	Calls     []Call `json:"calls,omitempty"`
 	Finish    string `json:"finish,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// Prompt is the prompt size the engine reports for the turn (SPEC §4.4).
+	Prompt int `json:"prompt_tokens,omitempty"`
 }
 
 // Call is one scripted tool call. Arguments is the JSON text the model writes.
@@ -110,7 +112,7 @@ func events(r Reply) []model.Event {
 			finish = "tool_calls"
 		}
 	}
-	return append(out, model.Event{Final: &model.Final{FinishReason: finish, ToolCalls: calls}})
+	return append(out, model.Event{Final: &model.Final{FinishReason: finish, ToolCalls: calls, Usage: model.Usage{PromptTokens: r.Prompt}}})
 }
 
 type stream struct {

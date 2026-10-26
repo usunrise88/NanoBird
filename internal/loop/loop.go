@@ -43,6 +43,10 @@ type Config struct {
 	ResultCapBytes int
 	// RetryBackoff is the wait before the first retry. It doubles per retry (SPEC §5.7).
 	RetryBackoff time.Duration
+	// ContextTokens is the context budget of the model (SPEC §4.4). Zero means 32,768.
+	ContextTokens int
+	// CompactionAt is the share of the context at which compaction runs (SPEC §4.4).
+	CompactionAt float64
 }
 
 // StopReason says why a run ended, in the terms of SPEC §4.3.
@@ -93,8 +97,12 @@ func New(client model.Client, reg *tools.Registry, env *tools.Env, log *session.
 
 // state is what one run keeps between its turns.
 type state struct {
-	task          string
-	msgs          []model.Message
+	task string
+	msgs []model.Message
+	// lastPrompt is the prompt size the engine reported for the last request, and
+	// sentLen is how many messages that request carried (SPEC §4.4).
+	lastPrompt    int
+	sentLen       int
 	anti          *mech.LoopTracker
 	ladder        mech.Ladder
 	gate          *mech.Gate
@@ -128,6 +136,9 @@ func (l *Loop) Run(ctx context.Context, task string) Result {
 		if ctx.Err() != nil {
 			return l.stop(Result{Stop: StopCancelled, Turns: turn - 1, Err: ctx.Err()})
 		}
+		if err := l.compactIfNeeded(ctx, turn, st); err != nil {
+			return l.stop(Result{Stop: StopError, Turns: turn, Err: err})
+		}
 		r, err := l.generate(ctx, turn, st.msgs, l.tools.Offered(l.env.Enabled))
 		if err != nil {
 			if ctx.Err() != nil {
@@ -135,6 +146,7 @@ func (l *Loop) Run(ctx context.Context, task string) Result {
 			}
 			return l.stop(Result{Stop: StopError, Turns: turn, Err: err})
 		}
+		st.lastPrompt, st.sentLen = r.Usage.PromptTokens, len(st.msgs)
 		if len(r.Calls) == 0 && r.Finish == "length" {
 			return l.stop(Result{Stop: StopMaxTokens, Turns: turn})
 		}

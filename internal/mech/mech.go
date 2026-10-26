@@ -16,6 +16,8 @@ const (
 	AntiLoop = "anti_loop"
 	// Boundary is M8: a shell command that names a credential store needs permission.
 	Boundary = "boundary"
+	// Compaction is N3: the context is shortened in stages once the prompt nears its budget.
+	Compaction = "compaction"
 	// Layering is M2: a prompt is classified as chat or task before any tool is offered.
 	Layering = "layering"
 	// Prefill is M1: the category router decides which tools a task loads.
@@ -49,7 +51,7 @@ var known = []string{
 
 var implemented = map[string]bool{
 	AntiLoop: true, Boundary: true, EditSafety: true, FinishGate: true,
-	Layering: true, Prefill: true,
+	Layering: true, Prefill: true, Compaction: true,
 	FormatRescue: true, Resilience: true, SelfCheck: true, ToolNameFix: true,
 	VerifyFeedback: true, WriteGuard: true,
 }
