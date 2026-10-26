@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -16,6 +17,15 @@ import (
 
 // maxRetries is how many times a failed model call is repeated (SPEC §5.7).
 const maxRetries = 3
+
+// writes names the tools that change files (SPEC §6.1).
+var writes = map[string]bool{
+	"create_file": true, "edit_file": true, "append_file": true,
+	"delete_file": true, "rollback": true,
+}
+
+// editing names the tools whose result the convergence notice reads (M6).
+var editing = map[string]bool{"create_file": true, "edit_file": true, "append_file": true}
 
 // Config is the part of the run settings the loop reads (SPEC §9.1, loop).
 type Config struct {
@@ -54,6 +64,10 @@ type Result struct {
 	Turns int
 	// Summary is what the accepted finish said.
 	Summary string
+	// Unverified is set when the finish was accepted after repeated rejections (SPEC §5.3).
+	Unverified bool
+	// Blocker names what stopped a run that the model could not finish (SPEC §4.3, rung 3).
+	Blocker string
 	// Err says why the run failed, when Stop is StopError.
 	Err error
 }
@@ -76,50 +90,94 @@ func New(client model.Client, reg *tools.Registry, env *tools.Env, log *session.
 	return &Loop{client: client, tools: reg, env: env, log: log, cfg: cfg}
 }
 
+// state is what one run keeps between its turns.
+type state struct {
+	task          string
+	msgs          []model.Message
+	anti          *mech.LoopTracker
+	ladder        mech.Ladder
+	gate          *mech.Gate
+	conv          *mech.Convergence
+	productive    int
+	lastShell     string
+	lastRejection string
+}
+
 // Run executes one prompt. It returns when a finish is accepted, when a stop
 // condition of SPEC §4.3 is met, or when ctx is cancelled.
 func (l *Loop) Run(ctx context.Context, task string) Result {
-	msgs := []model.Message{
-		{Role: model.RoleSystem, Content: l.cfg.System},
-		{Role: model.RoleUser, Content: task},
+	st := &state{
+		task: task,
+		msgs: []model.Message{
+			{Role: model.RoleSystem, Content: l.cfg.System},
+			{Role: model.RoleUser, Content: task},
+		},
+		anti: mech.NewLoopTracker(),
+		gate: mech.NewGate(),
+		conv: mech.NewConvergence(),
 	}
 	l.write("task", taskRecord{Text: task})
 	for turn := 1; turn <= l.cfg.MaxTurns; turn++ {
 		if ctx.Err() != nil {
 			return l.stop(Result{Stop: StopCancelled, Turns: turn - 1, Err: ctx.Err()})
 		}
-		r, err := l.generate(ctx, turn, msgs)
+		r, err := l.generate(ctx, turn, st.msgs)
 		if err != nil {
 			if ctx.Err() != nil {
 				return l.stop(Result{Stop: StopCancelled, Turns: turn, Err: err})
 			}
 			return l.stop(Result{Stop: StopError, Turns: turn, Err: err})
 		}
+		if len(r.Calls) == 0 && r.Finish == "length" {
+			return l.stop(Result{Stop: StopMaxTokens, Turns: turn})
+		}
 		if len(r.Calls) == 0 {
-			if r.Finish == "length" {
-				return l.stop(Result{Stop: StopMaxTokens, Turns: turn})
+			r.Calls = l.rescue(r.Text, turn)
+		}
+		if len(r.Calls) == 0 {
+			st.msgs = append(st.msgs, model.Message{Role: model.RoleAssistant, Content: r.Text}, l.nudge(turn, r.Text))
+			if res, done := l.failedTurn(st, turn); done {
+				return res
 			}
-			msgs = l.nudge(msgs, turn, r)
 			continue
 		}
-		msgs = append(msgs, model.Message{Role: model.RoleAssistant, Content: r.Text, ToolCalls: r.Calls})
+		st.msgs = append(st.msgs, model.Message{Role: model.RoleAssistant, Content: r.Text, ToolCalls: r.Calls})
+		executed := 0
 		for _, call := range r.Calls {
-			res := l.execute(ctx, turn, call)
-			if call.Name == "finish" && res.ok {
-				return l.stop(Result{Stop: StopEndTurn, Turns: turn, Summary: res.full})
+			if call.Name == "finish" {
+				if res, done := l.finish(ctx, st, turn, call); done {
+					return res
+				}
+				continue
 			}
-			msgs = append(msgs, model.Message{Role: model.RoleTool, ToolCallID: call.ID, Content: tools.Cap(res.full, l.cfg.ResultCapBytes)})
+			if hint, ok := l.guard(st, turn, call); !ok {
+				st.msgs = append(st.msgs, toolMessage(call.ID, hint))
+				continue
+			}
+			executed++
+			out := l.observe(st, turn, call, l.execute(ctx, turn, call))
+			st.msgs = append(st.msgs, toolMessage(call.ID, tools.Cap(out.full, l.cfg.ResultCapBytes)))
 		}
 		if l.err != nil {
 			return l.stop(Result{Stop: StopError, Turns: turn, Err: l.err})
 		}
+		if executed == 0 {
+			if res, done := l.failedTurn(st, turn); done {
+				return res
+			}
+			continue
+		}
+		st.ladder.Progressed()
 	}
 	return l.stop(Result{Stop: StopMaxTurns, Turns: l.cfg.MaxTurns})
 }
 
+// reply is one model turn as the loop reads it.
+type reply = model.Reply
+
 // generate asks the model for one reply. With the resilience mechanism on (M7),
 // a failed call is retried with doubling backoff.
-func (l *Loop) generate(ctx context.Context, turn int, msgs []model.Message) (model.Reply, error) {
+func (l *Loop) generate(ctx context.Context, turn int, msgs []model.Message) (reply, error) {
 	thinking := l.cfg.Thinking
 	req := model.Request{
 		Messages:    msgs,
@@ -141,47 +199,132 @@ func (l *Loop) generate(ctx context.Context, turn int, msgs []model.Message) (mo
 			return r, nil
 		}
 		if ctx.Err() != nil {
-			return model.Reply{}, err
+			return reply{}, err
 		}
-		if !l.env.Switches.On(mech.Resilience) {
-			return model.Reply{}, err
+		if !l.on(mech.Resilience) {
+			return reply{}, err
 		}
 		if attempt == maxRetries {
-			return model.Reply{}, fmt.Errorf("model call failed after %d attempts: %w", attempt+1, err)
+			return reply{}, fmt.Errorf("model call failed after %d attempts: %w", attempt+1, err)
 		}
 		l.write("mechanism", mechanismRecord{ID: mech.Resilience, Turn: turn, Event: "retry", Attempt: attempt + 1, Error: err.Error()})
 		select {
 		case <-ctx.Done():
-			return model.Reply{}, ctx.Err()
+			return reply{}, ctx.Err()
 		case <-time.After(l.cfg.RetryBackoff << attempt):
 		}
 	}
 }
 
 // once runs one streamed call and collects its reply.
-func (l *Loop) once(ctx context.Context, req model.Request) (model.Reply, error) {
+func (l *Loop) once(ctx context.Context, req model.Request) (reply, error) {
 	s, err := l.client.Complete(ctx, req)
 	if err != nil {
-		return model.Reply{}, err
+		return reply{}, err
 	}
 	return model.Collect(s)
 }
 
-// nudge answers a reply without a tool call. The message goes to the model and
-// is recorded as an intervention, so it can never be mistaken for the user's
-// text (SPEC §5.13).
-func (l *Loop) nudge(msgs []model.Message, turn int, r model.Reply) []model.Message {
-	kind := "no_tool_call"
-	text := "Your reply had no tool call, so the task is not finished. Use a tool, or call finish with a summary of what changed."
-	if strings.TrimSpace(r.Text) == "" {
-		kind = "empty_reply"
-		text = "Your reply was empty. Use a tool, or call finish with a summary of what changed."
+// rescue reads tool calls the model wrote as text (M5, SPEC §5.5).
+func (l *Loop) rescue(text string, turn int) []model.ToolCall {
+	if !l.on(mech.FormatRescue) {
+		return nil
 	}
-	l.write("intervention", interventionRecord{Turn: turn, Kind: kind, Message: text})
-	return append(msgs,
-		model.Message{Role: model.RoleAssistant, Content: r.Text},
-		model.Message{Role: model.RoleUser, Content: text},
-	)
+	calls := mech.Rescue(text, func(name string) bool {
+		_, ok := l.tools.Lookup(name)
+		return ok
+	})
+	if len(calls) > 0 {
+		l.write("mechanism", mechanismRecord{ID: mech.FormatRescue, Turn: turn, Event: "rescued", Count: len(calls)})
+	}
+	return calls
+}
+
+// nudge answers a reply without a tool call. The message is recorded as an
+// intervention, so it can never be mistaken for the user's text (SPEC §5.13).
+func (l *Loop) nudge(turn int, text string) model.Message {
+	kind := "no_tool_call"
+	msg := "Your reply had no tool call, so the task is not finished. Use a tool, or call finish with a summary of what changed."
+	if strings.TrimSpace(text) == "" {
+		kind = "empty_reply"
+		msg = "Your reply was empty. Use a tool, or call finish with a summary of what changed."
+	}
+	l.write("intervention", interventionRecord{Turn: turn, Kind: kind, Message: msg})
+	return model.Message{Role: model.RoleUser, Content: msg}
+}
+
+// failedTurn applies the escalation ladder to a turn that made no progress
+// (SPEC §5.4). It returns true, with the result, when the run has to end.
+func (l *Loop) failedTurn(st *state, turn int) (Result, bool) {
+	if !l.on(mech.AntiLoop) {
+		return Result{}, false
+	}
+	switch st.ladder.Failed() {
+	case mech.Reset:
+		l.write("mechanism", mechanismRecord{ID: mech.AntiLoop, Turn: turn, Event: "reset"})
+		st.msgs = l.resetMessages(st)
+		st.anti.Reset()
+	case mech.Exit:
+		blocker := "the model made no progress across two escalations; last refusal: " + st.lastRejection
+		return l.stop(Result{Stop: StopEndTurn, Turns: turn, Blocker: blocker}), true
+	}
+	return Result{}, false
+}
+
+// resetMessages drops the failed turns. The system prompt and the task stay,
+// and the plan is re-injected (rung 2, M3d).
+func (l *Loop) resetMessages(st *state) []model.Message {
+	text := "Earlier attempts at this task were dropped after repeated failures. The task is:\n" + st.task
+	if len(l.env.Plan.Items) > 0 {
+		text += "\n\nThe plan so far:\n" + l.env.Plan.Render()
+	}
+	return []model.Message{st.msgs[0], {Role: model.RoleUser, Content: text}}
+}
+
+// finish judges a finish call (SPEC §5.3). It returns the result when the finish
+// is accepted. A rejection goes back to the model as the result of the call.
+func (l *Loop) finish(ctx context.Context, st *state, turn int, call model.ToolCall) (Result, bool) {
+	var args struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(arguments(call.Arguments)), &args); err != nil || strings.TrimSpace(args.Summary) == "" {
+		st.msgs = append(st.msgs, toolMessage(call.ID, "error: finish needs a summary of what changed"))
+		return Result{}, false
+	}
+	decision := mech.Decision{Accept: true}
+	if l.on(mech.FinishGate) {
+		decision = st.gate.Judge(mech.Claim{
+			Task:       st.task,
+			Summary:    args.Summary,
+			Productive: st.productive,
+			Open:       l.env.Plan.Open(),
+			Exists:     l.hasContent,
+			Tests:      func() (bool, bool, string) { return l.runTests(ctx) },
+			Verify:     l.on(mech.VerifyFeedback),
+			SelfCheck:  l.on(mech.SelfCheck),
+		})
+	}
+	l.write("judgement", judgementRecord{Turn: turn, Check: decision.Check, Accepted: decision.Accept, Unverified: decision.Unverified, Message: decision.Message})
+	if decision.Accept {
+		return l.stop(Result{Stop: StopEndTurn, Turns: turn, Summary: args.Summary, Unverified: decision.Unverified}), true
+	}
+	st.lastRejection = decision.Message
+	st.msgs = append(st.msgs, toolMessage(call.ID, decision.Message))
+	return Result{}, false
+}
+
+// guard refuses a call before it runs when the anti-loop check says so (M4).
+func (l *Loop) guard(st *state, turn int, call model.ToolCall) (string, bool) {
+	if !l.on(mech.AntiLoop) {
+		return "", true
+	}
+	ok, hint := st.anti.Before(mech.Signature(call.Name, arguments(call.Arguments)))
+	if ok {
+		return "", true
+	}
+	st.lastRejection = hint
+	l.write("mechanism", mechanismRecord{ID: mech.AntiLoop, Turn: turn, Event: "refused", Error: hint})
+	return hint, false
 }
 
 // outcome is what one call produced: the full output, and whether it succeeded.
@@ -199,7 +342,7 @@ func (l *Loop) execute(ctx context.Context, turn int, call model.ToolCall) outco
 	tool, ok := l.tools.Lookup(call.Name)
 	switch {
 	case !ok:
-		err = fmt.Errorf("unknown tool %q; the tools are: %s", call.Name, strings.Join(l.tools.Names(), ", "))
+		err = l.unknownTool(call.Name)
 	case !json.Valid([]byte(arguments(call.Arguments))):
 		err = errors.New("the arguments are not valid JSON")
 	default:
@@ -213,6 +356,112 @@ func (l *Loop) execute(ctx context.Context, turn int, call model.ToolCall) outco
 	return res
 }
 
+// unknownTool answers a name the registry does not know. With tool_name_fix on,
+// the closest known tools come back with their descriptions (N4, SPEC §5.12).
+func (l *Loop) unknownTool(name string) error {
+	if !l.on(mech.ToolNameFix) {
+		return fmt.Errorf("unknown tool %q; the tools are: %s", name, strings.Join(l.tools.Names(), ", "))
+	}
+	var known []mech.Suggestion
+	for _, s := range l.tools.Schemas() {
+		known = append(known, mech.Suggestion{Name: s.Name, Description: s.Description})
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "unknown tool %q. The closest tools are:", name)
+	for _, s := range mech.Closest(name, known) {
+		fmt.Fprintf(&b, "\n- %s: %s", s.Name, s.Description)
+	}
+	return errors.New(b.String())
+}
+
+// observe runs the after-call hooks: the progress that the anti-loop count reads
+// (M4), the productive count of the finish gate, and the convergence notice on
+// edits (M6).
+func (l *Loop) observe(st *state, turn int, call model.ToolCall, out outcome) outcome {
+	progress := false
+	switch {
+	case !out.ok:
+		// A failed call changed nothing.
+	case writes[call.Name]:
+		progress = true
+	case call.Name == "run_shell":
+		progress = out.full != st.lastShell
+		st.lastShell = out.full
+	}
+	if out.ok && call.Name != "todo" {
+		st.productive++
+	}
+	if l.on(mech.AntiLoop) {
+		st.anti.Observe(progress)
+	}
+	if out.ok && editing[call.Name] && l.on(mech.EditSafety) {
+		if p := argPath(call.Arguments); p != "" {
+			if content, err := l.readFile(p); err == nil {
+				if hint := st.conv.Observe(p, content); hint != "" {
+					out.full += "\n" + hint
+					l.write("mechanism", mechanismRecord{ID: mech.EditSafety, Turn: turn, Event: "notice", Error: hint})
+				}
+			}
+		}
+	}
+	return out
+}
+
+// hasContent reports whether rel names a non-empty file in the workspace (the
+// claim check, SPEC §5.3).
+func (l *Loop) hasContent(rel string) bool {
+	abs, err := l.env.Workspace.Resolve(rel)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(abs)
+	return err == nil && !info.IsDir() && info.Size() > 0
+}
+
+// readFile returns the content of a file in the workspace.
+func (l *Loop) readFile(rel string) (string, error) {
+	abs, err := l.env.Workspace.Resolve(rel)
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(abs)
+	return string(data), err
+}
+
+// runTests is the test guard (SPEC §5.3, check 4). ran is false when no runner
+// applies or the runner cannot start, and the guard then steps aside.
+func (l *Loop) runTests(ctx context.Context) (bool, bool, string) {
+	runner, ok := tools.DetectRunner(l.env.Workspace.Root())
+	if !ok {
+		return false, true, ""
+	}
+	passed, out, err := tools.RunTests(ctx, l.env, runner)
+	if err != nil {
+		l.write("mechanism", mechanismRecord{ID: mech.FinishGate, Event: "tests_skipped", Error: err.Error()})
+		return false, true, ""
+	}
+	return true, passed, out
+}
+
+// argPath reads the path argument of a call, or "" when there is none.
+func argPath(args string) string {
+	var a struct {
+		Path string `json:"path"`
+	}
+	_ = json.Unmarshal([]byte(arguments(args)), &a)
+	return a.Path
+}
+
+// toolMessage is the result of one call, as the model reads it.
+func toolMessage(id, content string) model.Message {
+	return model.Message{Role: model.RoleTool, ToolCallID: id, Content: content}
+}
+
+// on reports whether a mechanism runs in this run.
+func (l *Loop) on(id string) bool {
+	return l.env.Switches.On(id)
+}
+
 // arguments returns the argument text of a call, with an empty one read as an
 // empty object.
 func arguments(s string) string {
@@ -224,7 +473,7 @@ func arguments(s string) string {
 
 // stop records how the run ended and returns the result.
 func (l *Loop) stop(r Result) Result {
-	l.write("stop", stopRecord{Reason: string(r.Stop), Turns: r.Turns, Summary: r.Summary, Error: errorText(r.Err)})
+	l.write("stop", stopRecord{Reason: string(r.Stop), Turns: r.Turns, Summary: r.Summary, Unverified: r.Unverified, Blocker: r.Blocker, Error: errorText(r.Err)})
 	if l.err != nil {
 		r.Stop = StopError
 		r.Err = l.err

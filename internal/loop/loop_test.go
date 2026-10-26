@@ -66,7 +66,7 @@ func newHarness(t *testing.T, dir string, cfg Config, script ...fake.Reply) *har
 func defaultConfig() Config {
 	return Config{
 		System:          prefill.System("bash"),
-		MaxTurns:        10,
+		MaxTurns:        20,
 		OutputCapTokens: 8192,
 		ResultCapBytes:  16384,
 	}
@@ -76,6 +76,11 @@ func defaultConfig() Config {
 func finishWith(summary string) fake.Reply {
 	args, _ := json.Marshal(map[string]string{"summary": summary})
 	return fake.Reply{Calls: []fake.Call{{Name: "finish", Arguments: string(args)}}}
+}
+
+// listDir is a reply that lists the workspace: productive work the gate accepts.
+func listDir() fake.Reply {
+	return fake.Reply{Calls: []fake.Call{{Name: "list_dir", Arguments: "{}"}}}
 }
 
 // kinds lists the record kinds of a transcript, in order.
@@ -110,23 +115,33 @@ func count(list []string, kind string) int {
 	return n
 }
 
+// transcript returns the text of a transcript.
+func transcript(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
 func TestEndsWhenFinishIsAccepted(t *testing.T) {
-	h := newHarness(t, t.TempDir(), defaultConfig(), finishWith("all done"))
-	res := h.loop.Run(context.Background(), "do nothing")
-	if res.Stop != StopEndTurn || res.Summary != "all done" || res.Turns != 1 {
+	h := newHarness(t, t.TempDir(), defaultConfig(), listDir(), finishWith("all done"), finishWith("all done"))
+	res := h.loop.Run(context.Background(), "list the files, then finish")
+	if res.Stop != StopEndTurn || res.Summary != "all done" || res.Turns != 3 || res.Unverified {
 		t.Fatalf("result = %+v", res)
 	}
 }
 
 func TestRetriesAFailedCallWithBackoff(t *testing.T) {
 	h := newHarness(t, t.TempDir(), defaultConfig(),
-		fake.Reply{Error: "engine busy"}, fake.Reply{Error: "engine busy"}, finishWith("ok"))
+		fake.Reply{Error: "engine busy"}, fake.Reply{Error: "engine busy"}, listDir(), finishWith("ok"), finishWith("ok"))
 	res := h.loop.Run(context.Background(), "task")
 	if res.Stop != StopEndTurn {
 		t.Fatalf("result = %+v", res)
 	}
-	if n := len(h.client.Requests); n != 3 {
-		t.Fatalf("%d requests, want 3", n)
+	if n := len(h.client.Requests); n != 5 {
+		t.Fatalf("%d requests, want 5", n)
 	}
 	if n := count(kinds(t, h.log.Path()), "mechanism"); n != 2 {
 		t.Fatalf("%d retry records, want 2", n)
@@ -172,7 +187,7 @@ func TestStopsAtTheTurnBudget(t *testing.T) {
 }
 
 func TestTextOnlyReplyIsNudged(t *testing.T) {
-	h := newHarness(t, t.TempDir(), defaultConfig(), fake.Reply{Text: "I will look at it."}, finishWith("ok"))
+	h := newHarness(t, t.TempDir(), defaultConfig(), fake.Reply{Text: "I will look at it."}, listDir(), finishWith("ok"), finishWith("ok"))
 	if res := h.loop.Run(context.Background(), "task"); res.Stop != StopEndTurn {
 		t.Fatalf("result = %+v", res)
 	}
@@ -205,20 +220,22 @@ func TestCancelledRunSendsNothing(t *testing.T) {
 
 func TestUnknownToolIsAnAnswer(t *testing.T) {
 	h := newHarness(t, t.TempDir(), defaultConfig(),
-		fake.Reply{Calls: []fake.Call{{Name: "frobnicate", Arguments: "{}"}}}, finishWith("ok"))
+		fake.Reply{Calls: []fake.Call{{Name: "frobnicate", Arguments: "{}"}}}, listDir(), finishWith("ok"), finishWith("ok"))
 	if res := h.loop.Run(context.Background(), "task"); res.Stop != StopEndTurn {
 		t.Fatalf("result = %+v", res)
 	}
 	msgs := h.client.Requests[1].Messages
 	last := msgs[len(msgs)-1]
-	if last.Role != model.RoleTool || !strings.Contains(last.Content, `unknown tool "frobnicate"`) {
+	if last.Role != model.RoleTool || !strings.Contains(last.Content, `unknown tool "frobnicate"`) || !strings.Contains(last.Content, "closest tools") {
 		t.Fatalf("the unknown tool was not answered: %+v", last)
 	}
 }
 
 func TestBrokenArgumentsAreAnAnswer(t *testing.T) {
 	h := newHarness(t, t.TempDir(), defaultConfig(),
-		fake.Reply{Calls: []fake.Call{{Name: "create_file", Arguments: `{"path": "a.txt", `}}}, finishWith("ok"))
+		fake.Reply{Calls: []fake.Call{{Name: "create_file", Arguments: `{"path": "a.txt", `}}},
+		fake.Reply{Calls: []fake.Call{{Name: "create_file", Arguments: `{"path":"b.txt","content":"x"}`}}},
+		finishWith("ok"), finishWith("ok"))
 	if res := h.loop.Run(context.Background(), "task"); res.Stop != StopEndTurn {
 		t.Fatalf("result = %+v", res)
 	}
@@ -236,5 +253,91 @@ func TestTranscriptFailureStopsTheRun(t *testing.T) {
 	res := h.loop.Run(context.Background(), "task")
 	if res.Stop != StopError || res.Err == nil {
 		t.Fatalf("a run with a broken transcript went on: %+v", res)
+	}
+}
+
+func TestRepeatedCallIsRefusedFromTheSixth(t *testing.T) {
+	script := []fake.Reply{}
+	for i := 0; i < mech.SameCallLimit; i++ {
+		script = append(script, listDir())
+	}
+	script = append(script, finishWith("ok"), finishWith("ok"))
+	h := newHarness(t, t.TempDir(), defaultConfig(), script...)
+	if res := h.loop.Run(context.Background(), "task"); res.Stop != StopEndTurn {
+		t.Fatalf("result = %+v", res)
+	}
+	if n := count(kinds(t, h.log.Path()), "mechanism"); n != 1 {
+		t.Fatalf("%d refusals, want 1", n)
+	}
+}
+
+func TestFinishGateNamesAMissingFileThenAccepts(t *testing.T) {
+	h := newHarness(t, t.TempDir(), defaultConfig(),
+		fake.Reply{Calls: []fake.Call{{Name: "create_file", Arguments: `{"path":"a.txt","content":"x"}`}}},
+		finishWith("Wrote report.md."),
+		fake.Reply{Calls: []fake.Call{{Name: "create_file", Arguments: `{"path":"report.md","content":"Done.\n"}`}}},
+		finishWith("Wrote report.md."), finishWith("Wrote report.md."))
+	res := h.loop.Run(context.Background(), "write the report")
+	if res.Stop != StopEndTurn || res.Unverified {
+		t.Fatalf("result = %+v", res)
+	}
+	text := transcript(t, h.log.Path())
+	if !strings.Contains(text, "report.md") || !strings.Contains(text, `"check":"claims"`) {
+		t.Fatalf("the missing file was not judged:\n%s", text)
+	}
+}
+
+func TestFinishAfterThreeRejectionsIsUnverified(t *testing.T) {
+	script := []fake.Reply{
+		{Calls: []fake.Call{{Name: "create_file", Arguments: `{"path":"a.txt","content":"a"}`}}},
+	}
+	for i := 0; i < 4; i++ {
+		script = append(script, finishWith("Updated missing.md."))
+	}
+	h := newHarness(t, t.TempDir(), defaultConfig(), script...)
+	res := h.loop.Run(context.Background(), "update the files")
+	if res.Stop != StopEndTurn || !res.Unverified {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+func TestFormatRescueRunsTheCall(t *testing.T) {
+	h := newHarness(t, t.TempDir(), defaultConfig(),
+		fake.Reply{Text: `I will look: {"name": "list_dir", "arguments": {}}`}, finishWith("ok"), finishWith("ok"))
+	if res := h.loop.Run(context.Background(), "look at the workspace"); res.Stop != StopEndTurn {
+		t.Fatalf("result = %+v", res)
+	}
+	text := transcript(t, h.log.Path())
+	if !strings.Contains(text, `"event":"rescued"`) || !strings.Contains(text, `"name":"list_dir"`) {
+		t.Fatalf("the rescued call did not run:\n%s", text)
+	}
+}
+
+func TestLadderResetsThenExitsWithABlocker(t *testing.T) {
+	var script []fake.Reply
+	for i := 0; i < 2*mech.LadderLimit; i++ {
+		script = append(script, fake.Reply{})
+	}
+	h := newHarness(t, t.TempDir(), defaultConfig(), script...)
+	res := h.loop.Run(context.Background(), "task")
+	if res.Stop != StopEndTurn || res.Blocker == "" {
+		t.Fatalf("result = %+v", res)
+	}
+	if !strings.Contains(transcript(t, h.log.Path()), `"event":"reset"`) {
+		t.Fatal("the reset rung is missing from the transcript")
+	}
+}
+
+func TestUndoingAnEditDrawsANotice(t *testing.T) {
+	h := newHarness(t, t.TempDir(), defaultConfig(),
+		fake.Reply{Calls: []fake.Call{{Name: "create_file", Arguments: `{"path":"a.txt","content":"one\n"}`}}},
+		fake.Reply{Calls: []fake.Call{{Name: "edit_file", Arguments: `{"path":"a.txt","old":"one","new":"two"}`}}},
+		fake.Reply{Calls: []fake.Call{{Name: "edit_file", Arguments: `{"path":"a.txt","old":"two","new":"one"}`}}},
+		finishWith("ok"), finishWith("ok"))
+	if res := h.loop.Run(context.Background(), "task"); res.Stop != StopEndTurn {
+		t.Fatalf("result = %+v", res)
+	}
+	if !strings.Contains(transcript(t, h.log.Path()), `"event":"notice"`) {
+		t.Fatal("the undo drew no notice")
 	}
 }

@@ -1,5 +1,34 @@
 [
-  {"calls": [{"name": "summarize_repo", "arguments": "{}"}]},
-  {"calls": [{"name": "list_dir", "arguments": "{}"}]},
-  {"calls": [{"name": "finish", "arguments": "{\"summary\": \"The workspace is empty.\"}"}]}
+  {
+    "calls": [
+      {
+        "name": "summarize_repo",
+        "arguments": "{}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "list_dir",
+        "arguments": "{}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"The workspace is empty.\"}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"The workspace is empty.\"}"
+      }
+    ]
+  }
 ]

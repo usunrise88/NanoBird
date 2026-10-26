@@ -1,0 +1,21 @@
+[
+  {
+    "text": "I will look at it: {\"name\": \"list_dir\", \"arguments\": {}}"
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"Looked at the workspace.\"}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"Looked at the workspace.\"}"
+      }
+    ]
+  }
+]
