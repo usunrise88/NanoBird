@@ -37,8 +37,7 @@ func main() {
 	case "sessions":
 		os.Exit(sessionsCmd(os.Args[2:], os.Stdout, os.Stderr))
 	case "acp":
-		fmt.Fprintln(os.Stderr, "nanobird: acp is not implemented yet")
-		os.Exit(1)
+		os.Exit(acpCommand(os.Args[2:], os.Stdin, os.Stdout, os.Stderr, version))
 	default:
 		usage()
 		os.Exit(2)

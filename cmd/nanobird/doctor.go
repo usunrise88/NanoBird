@@ -21,7 +21,7 @@ func doctorCmd(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	cfg, err := flags.load()
+	cfg, err := flags.load(*flags.cwd)
 	if err != nil {
 		fmt.Fprintf(stderr, "nanobird doctor: %v\n", err)
 		return 2
