@@ -55,6 +55,8 @@ type Agent struct {
 
 	mu       sync.Mutex
 	sessions map[sdk.SessionId]*activeSession
+	// caps is what the client offers, from its initialize request (SPEC §8.6).
+	caps sdk.ClientCapabilities
 }
 
 // NewAgent returns an agent that opens its sessions with open. Serve connects it
@@ -94,8 +96,11 @@ var modes = []struct{ id, name, description string }{
 }
 
 // Initialize answers the handshake: ACP v1, no authentication, text prompts, and the
-// session methods that this agent serves.
-func (a *Agent) Initialize(context.Context, sdk.InitializeRequest) (sdk.InitializeResponse, error) {
+// session methods that this agent serves. It keeps what the client offers.
+func (a *Agent) Initialize(_ context.Context, p sdk.InitializeRequest) (sdk.InitializeResponse, error) {
+	a.mu.Lock()
+	a.caps = p.ClientCapabilities
+	a.mu.Unlock()
 	return sdk.InitializeResponse{
 		ProtocolVersion: sdk.ProtocolVersionNumber,
 		AgentInfo:       &sdk.Implementation{Name: "nanobird", Version: a.version},
@@ -335,6 +340,13 @@ func (a *Agent) attach(cwd string, id sdk.SessionId) (*activeSession, error) {
 		return s, nil
 	}
 	return a.start(cwd, string(id))
+}
+
+// clientCaps is what the client offers.
+func (a *Agent) clientCaps() sdk.ClientCapabilities {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.caps
 }
 
 // session looks up an open session by id.

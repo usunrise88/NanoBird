@@ -104,6 +104,15 @@ func runRunShell(ctx context.Context, env *Env, args json.RawMessage) (string, e
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	argv := append(append([]string{}, env.Shell.Argv[1:]...), a.Command)
+	if env.RunTerminal != nil {
+		text, handled, err := env.RunTerminal(ctx, env.Shell.Argv[0], argv, env.Workspace.Root())
+		if err != nil {
+			return "", err
+		}
+		if handled {
+			return text, nil
+		}
+	}
 	cmd := exec.CommandContext(ctx, env.Shell.Argv[0], argv...)
 	cmd.Dir = env.Workspace.Root()
 	// A child that keeps the pipe open must not hold the run after the shell is stopped.

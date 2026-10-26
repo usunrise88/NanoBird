@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -27,6 +28,9 @@ type updates struct {
 	// meta is the nanobird metadata of the call that runs: the first mechanism that
 	// changed it (SPEC §8.8).
 	meta map[string]any
+	// terminal is the terminal of the client that runs the call, when it runs in one
+	// (SPEC §8.6).
+	terminal string
 	// The counters of the session, which _nanobird/stats reports (SPEC §8.8).
 	calls, firings, turns, tokens atomic.Int64
 	started                       time.Time
@@ -101,6 +105,7 @@ func (u *updates) Text(piece string) {
 func (u *updates) ToolCall(call model.ToolCall) {
 	u.calls.Add(1)
 	u.meta = nil
+	u.terminal = ""
 	u.call = call.ID
 	a := argsOf(call)
 	opts := []sdk.ToolCallStartOpt{
@@ -125,6 +130,9 @@ func (u *updates) ToolDone(call model.ToolCall, ok bool, output string) {
 		status = sdk.ToolCallStatusFailed
 	} else if diff, found := u.diffOf(call); found {
 		content = []sdk.ToolCallContent{diff}
+	}
+	if u.terminal != "" {
+		content = []sdk.ToolCallContent{sdk.ToolTerminalRef(u.terminal)}
 	}
 	upd := sdk.UpdateToolCall(sdk.ToolCallId(call.ID),
 		sdk.WithUpdateStatus(status),
@@ -338,4 +346,46 @@ func (u *updates) Permit(ctx context.Context, p tools.Permission) tools.Answer {
 		}
 	}
 	return tools.Deny
+}
+
+// ReadText reads a file through the client, when the client offers its file system
+// (SPEC §8.6). Otherwise the tool reads the file itself.
+func (u *updates) ReadText(ctx context.Context, abs string) (string, bool, error) {
+	if !u.agent.clientCaps().Fs.ReadTextFile {
+		return "", false, nil
+	}
+	<-u.agent.ready
+	resp, err := u.agent.conn.ReadTextFile(ctx, sdk.ReadTextFileRequest{SessionId: u.id, Path: abs})
+	if err != nil {
+		return "", true, err
+	}
+	return resp.Content, true, nil
+}
+
+// RunTerminal runs a command in a terminal of the client, when the client offers
+// terminals (SPEC §8.6). The terminal is part of the tool call, so the client shows
+// it live. The output answers the call, with the exit code when it is not zero.
+func (u *updates) RunTerminal(ctx context.Context, command string, args []string, cwd string) (string, bool, error) {
+	if !u.agent.clientCaps().Terminal {
+		return "", false, nil
+	}
+	<-u.agent.ready
+	created, err := u.agent.conn.CreateTerminal(ctx, sdk.CreateTerminalRequest{SessionId: u.id, Command: command, Args: args, Cwd: &cwd})
+	if err != nil {
+		return "", true, err
+	}
+	u.terminal = created.TerminalId
+	exit, err := u.agent.conn.WaitForTerminalExit(ctx, sdk.WaitForTerminalExitRequest{SessionId: u.id, TerminalId: created.TerminalId})
+	if err != nil {
+		return "", true, err
+	}
+	out, err := u.agent.conn.TerminalOutput(ctx, sdk.TerminalOutputRequest{SessionId: u.id, TerminalId: created.TerminalId})
+	if err != nil {
+		return "", true, err
+	}
+	text := out.Output
+	if exit.ExitCode != nil && *exit.ExitCode != 0 {
+		text = fmt.Sprintf("%s\n[exit code %d]", text, *exit.ExitCode)
+	}
+	return text, true, nil
 }
