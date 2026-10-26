@@ -4,6 +4,7 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	sdk "github.com/coder/acp-go-sdk"
 	"github.com/usunrise88/nanobird/internal/loop"
@@ -27,6 +29,8 @@ type Runner interface {
 	Prompt(ctx context.Context, task string) loop.Result
 	// SetMode sets the mode of the prompts that follow: auto, chat or task (SPEC §8.4).
 	SetMode(mode string)
+	// SetAblation sets the mechanisms that the session leaves off (SPEC §8.8).
+	SetAblation(mechanisms []string) error
 	// Thinking is the thinking policy of the next prompts: off, plan or on.
 	Thinking() string
 	// SetThinking sets the thinking policy of the next prompts (SPEC §4.5, §8.4).
@@ -75,6 +79,8 @@ type activeSession struct {
 	thinking string
 	// titled is set once the session has a title, from its first task.
 	titled bool
+	// prompted is set once a prompt has run, after which the ablation is fixed.
+	prompted bool
 }
 
 // thinkingValues are the values of the thinking option (SPEC §4.5, §8.4).
@@ -217,6 +223,36 @@ func (a *Agent) Prompt(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResp
 	return a.answer(s, res)
 }
 
+// HandleExtensionMethod answers the nanobird extension methods (SPEC §8.8).
+// _nanobird/stats reports the counters of a session, and _nanobird/ablation sets the
+// mechanisms that it leaves off, before its first prompt. Other methods are not
+// found.
+func (a *Agent) HandleExtensionMethod(_ context.Context, method string, params json.RawMessage) (any, error) {
+	switch method {
+	case "_nanobird/stats", "_nanobird/ablation":
+	default:
+		return nil, sdk.NewMethodNotFound(method)
+	}
+	var p struct {
+		SessionId  sdk.SessionId `json:"sessionId"`
+		Mechanisms []string      `json:"mechanisms"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, sdk.NewInvalidParams(err.Error())
+	}
+	s, err := a.session(p.SessionId)
+	if err != nil {
+		return nil, err
+	}
+	if method == "_nanobird/stats" {
+		return s.obs.stats(), nil
+	}
+	if err := s.setAblation(p.Mechanisms); err != nil {
+		return nil, err
+	}
+	return map[string]any{}, nil
+}
+
 // Cancel stops the prompt that runs in the session. The prompt answers cancelled.
 func (a *Agent) Cancel(_ context.Context, p sdk.CancelNotification) error {
 	s, err := a.session(p.SessionId)
@@ -273,7 +309,7 @@ func (a *Agent) SetSessionMode(_ context.Context, p sdk.SetSessionModeRequest) (
 // start opens a session in the workspace at cwd, continuing the session id when it
 // is not empty, and registers it under its id.
 func (a *Agent) start(cwd, id string) (*activeSession, error) {
-	obs := &updates{agent: a, root: cwd}
+	obs := &updates{agent: a, root: cwd, started: time.Now()}
 	runner, err := a.open(cwd, id, obs)
 	if err != nil {
 		return nil, sdk.NewInternalError(err.Error())
@@ -333,6 +369,7 @@ func (s *activeSession) begin(cancel context.CancelFunc) bool {
 		return false
 	}
 	s.cancel = cancel
+	s.prompted = true
 	return true
 }
 
@@ -366,6 +403,20 @@ func (s *activeSession) currentThinking() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.thinking
+}
+
+// setAblation sets the mechanisms the session leaves off. It is refused once a
+// prompt has run (SPEC §8.8).
+func (s *activeSession) setAblation(mechanisms []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.prompted {
+		return sdk.NewInvalidRequest("the ablation is set before the first prompt")
+	}
+	if err := s.runner.SetAblation(mechanisms); err != nil {
+		return sdk.NewInvalidParams(err.Error())
+	}
+	return nil
 }
 
 // setThinking sets the thinking policy of the session's next prompt.

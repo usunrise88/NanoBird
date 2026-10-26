@@ -8,9 +8,11 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 
 	"github.com/usunrise88/nanobird/internal/acp"
 	"github.com/usunrise88/nanobird/internal/loop"
+	"github.com/usunrise88/nanobird/internal/mech"
 )
 
 // acpCommand is `nanobird acp` (SPEC §8): an ACP agent over stdio. The client gives
@@ -84,6 +86,17 @@ func (r *sessionRunner) Prompt(ctx context.Context, task string) loop.Result {
 
 // SetMode sets the mode of the session's next prompts.
 func (r *sessionRunner) SetMode(mode string) { r.setup.lp.SetMode(loop.Mode(mode)) }
+
+// SetAblation sets the mechanisms that the session leaves off (SPEC §8.8). It
+// replaces the list the configuration gave.
+func (r *sessionRunner) SetAblation(mechanisms []string) error {
+	sw, err := mech.Parse(strings.Join(mechanisms, ","))
+	if err != nil {
+		return err
+	}
+	r.setup.lp.SetSwitches(sw)
+	return nil
+}
 
 // Thinking is the thinking policy of the session's next prompts.
 func (r *sessionRunner) Thinking() string { return r.setup.lp.Thinking() }
