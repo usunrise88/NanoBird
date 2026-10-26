@@ -122,6 +122,7 @@ type state struct {
 	ladder        mech.Ladder
 	gate          *mech.Gate
 	conv          *mech.Convergence
+	malformed     *mech.Malformed
 	productive    int
 	lastShell     string
 	lastRejection string
@@ -138,9 +139,10 @@ func (l *Loop) Run(ctx context.Context, task string) Result {
 			{Role: model.RoleSystem, Content: l.cfg.System},
 			{Role: model.RoleUser, Content: task},
 		},
-		anti: mech.NewLoopTracker(),
-		gate: mech.NewGate(),
-		conv: mech.NewConvergence(),
+		anti:      mech.NewLoopTracker(),
+		gate:      mech.NewGate(),
+		conv:      mech.NewConvergence(),
+		malformed: mech.NewMalformed(),
 	}
 	l.write("task", taskRecord{Text: task})
 	l.route(task)
@@ -182,7 +184,7 @@ func (l *Loop) run(ctx context.Context, st *state, first int) Result {
 			r.Calls = l.rescue(r.Text, turn)
 		}
 		if len(r.Calls) == 0 {
-			st.msgs = append(st.msgs, model.Message{Role: model.RoleAssistant, Content: r.Text}, l.nudge(turn, r.Text))
+			st.msgs = append(st.msgs, model.Message{Role: model.RoleAssistant, Content: r.Text}, l.nudge(st, turn, r.Text))
 			if res, done := l.failedTurn(st, turn); done {
 				return res
 			}
@@ -309,15 +311,36 @@ func (l *Loop) rescue(text string, turn int) []model.ToolCall {
 
 // nudge answers a reply without a tool call. The message is recorded as an
 // intervention, so it can never be mistaken for the user's text (SPEC §5.13).
-func (l *Loop) nudge(turn int, text string) model.Message {
+func (l *Loop) nudge(st *state, turn int, text string) model.Message {
 	kind := "no_tool_call"
 	msg := "Your reply had no tool call, so the task is not finished. Use a tool, or call finish with a summary of what changed."
 	if strings.TrimSpace(text) == "" {
 		kind = "empty_reply"
 		msg = "Your reply was empty. Use a tool, or call finish with a summary of what changed."
+	} else if refusal, ok := l.refuse(st, turn, text); ok {
+		kind, msg = "malformed_call", refusal
 	}
 	l.write("intervention", interventionRecord{Turn: turn, Kind: kind, Message: msg})
 	return model.Message{Role: model.RoleUser, Content: msg}
+}
+
+// refuse answers a call that the reply wrote as text and Rescue did not read
+// (M5). The refusal names the tool and shows its smallest valid arguments.
+func (l *Loop) refuse(st *state, turn int, text string) (string, bool) {
+	if !l.on(mech.FormatRescue) {
+		return "", false
+	}
+	name := mech.Attempted(text, l.tools.Names())
+	if name == "" {
+		return "", false
+	}
+	tool, ok := l.tools.Lookup(name)
+	if !ok {
+		return "", false
+	}
+	count := st.malformed.Count(name)
+	l.write("mechanism", mechanismRecord{ID: mech.FormatRescue, Turn: turn, Event: "malformed", Error: name})
+	return mech.Rejection(name, tools.Example(tool), count), true
 }
 
 // failedTurn applies the escalation ladder to a turn that made no progress
