@@ -7,6 +7,9 @@
 # this repository included when it is run on itself.
 /.nanobird/
 
+# The ACP test kit's checkout, binaries and report (make acp-tck)
+/.acp-tck/
+
 # Tooling
 *.test
 *.out

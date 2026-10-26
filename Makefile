@@ -14,13 +14,17 @@ export CGO_ENABLED := 0
 # Linux and Windows, amd64 and arm64. macOS is out for now (docs/ROADMAP.md).
 TARGETS     := linux/amd64 linux/arm64 windows/amd64 windows/arm64
 
-.PHONY: all build cross lint lang-check test test-race tidy clean help
+.PHONY: all build cross lint lang-check test test-race tidy clean help acp-tck
 
 all: build
 
 ## build: the binary for this machine, into dist/
 build:
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(DIST)/nanobird ./cmd/nanobird
+
+## acp-tck: the official ACP test kit against nanobird acp, with a scripted model (SPEC §12, G2)
+acp-tck:
+	GO=$(GO) sh tools/acptck/run.sh
 
 ## cross: every release target, into dist/<os>_<arch>/
 cross:
