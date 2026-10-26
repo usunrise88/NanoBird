@@ -52,8 +52,9 @@ type Manager struct {
 // Load starts the servers of the config file and lists their tools. A missing
 // file means no servers. A server that fails to start is a warning, not an error.
 // builtin names the built-in tools; an MCP tool with the same name is hidden,
-// because the built-in wins (SPEC §6.4).
-func Load(ctx context.Context, path string, flatLimit int, callTimeout time.Duration, builtin []string) (*Manager, error) {
+// because the built-in wins (SPEC §6.4). Offline, tools that reach outside the
+// machine are hidden too.
+func Load(ctx context.Context, path string, flatLimit int, callTimeout time.Duration, builtin []string, offline bool) (*Manager, error) {
 	m := &Manager{}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -88,7 +89,7 @@ func Load(ctx context.Context, path string, flatLimit int, callTimeout time.Dura
 		m.clients = append(m.clients, c)
 		state := &serverState{}
 		for _, info := range infos {
-			if allowed(spec, info.Name) {
+			if allowed(spec, info.Name) && reachable(info, offline) {
 				listed = append(listed, candidate{server: name, spec: spec, info: info, client: c, state: state})
 			}
 		}
@@ -128,14 +129,36 @@ func allowed(spec Spec, tool string) bool {
 	return !slices.Contains(spec.Deny, tool)
 }
 
-// callFunc runs one MCP tool. A tool from an untrusted server, and not in its
-// auto_approve list, needs a permission. A run has no one to ask, so it is
-// denied (SPEC §6.4, §5.11). A server that times out twice leaves the run.
+// reachable reports whether a tool may be offered. Offline, a tool with
+// openWorldHint is off, like web_fetch (SPEC §6.4).
+func reachable(info ToolInfo, offline bool) bool {
+	return !offline || info.Annotations.OpenWorldHint == nil || !*info.Annotations.OpenWorldHint
+}
+
+// denial says why a run without a prompt may not call the tool, or returns "" when
+// it may. Only a tool in auto_approve, or a read-only tool of a trusted server, runs
+// unattended. Every other call would ask, and a run has no one to ask (SPEC §6.4,
+// §5.11). Annotations from an untrusted server never remove a prompt.
+func denial(spec Spec, info ToolInfo) string {
+	switch {
+	case slices.Contains(spec.AutoApprove, info.Name):
+		return ""
+	case !spec.Trusted:
+		return "comes from an untrusted MCP server"
+	case info.Annotations.ReadOnlyHint == nil || !*info.Annotations.ReadOnlyHint:
+		return "is not marked read-only by a trusted server"
+	}
+	return ""
+}
+
+// callFunc runs one MCP tool. A call that needs a permission is denied in a run,
+// which has no one to ask (SPEC §6.4, §5.11). A server that times out twice leaves
+// the run.
 func callFunc(c candidate, timeout time.Duration) func(ctx context.Context, args json.RawMessage) (string, error) {
 	name := c.server + "." + c.info.Name
 	return func(ctx context.Context, args json.RawMessage) (string, error) {
-		if !c.spec.Trusted && !slices.Contains(c.spec.AutoApprove, c.info.Name) {
-			return "", fmt.Errorf("needs permission: %s comes from an untrusted MCP server; a run without a permission prompt denies it", name)
+		if reason := denial(c.spec, c.info); reason != "" {
+			return "", fmt.Errorf("needs permission: %s %s; a run without a permission prompt denies it", name, reason)
 		}
 		if c.state.timeouts >= maxTimeouts {
 			return "", fmt.Errorf("mcp server %s left the run after %d timeouts", c.server, c.state.timeouts)

@@ -38,7 +38,7 @@ func serveFake() {
 			result = map[string]any{"protocolVersion": protocolVersion, "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]string{"name": "fake"}}
 		case "tools/list":
 			result = map[string]any{"tools": []map[string]any{
-				{"name": "echo", "description": "Echo the text argument. Second sentence.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"text": map[string]string{"type": "string"}}}},
+				{"name": "echo", "description": "Echo the text argument. Second sentence.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"text": map[string]string{"type": "string"}}}, "annotations": map[string]any{"readOnlyHint": true}},
 				{"name": "slow", "description": "Wait two seconds, then answer.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}},
 			}}
 		case "tools/call":
@@ -121,7 +121,7 @@ func TestClientListsAndCalls(t *testing.T) {
 
 func TestManagerOffersTrustedToolsFlat(t *testing.T) {
 	path := writeConfig(t, map[string]Spec{"fake": fakeSpec(true)})
-	m, err := Load(context.Background(), path, 12, 5*time.Second, []string{"read_file"})
+	m, err := Load(context.Background(), path, 12, 5*time.Second, []string{"read_file"}, false)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestManagerOffersTrustedToolsFlat(t *testing.T) {
 
 func TestUntrustedToolNeedsPermission(t *testing.T) {
 	path := writeConfig(t, map[string]Spec{"fake": fakeSpec(false)})
-	m, err := Load(context.Background(), path, 12, 5*time.Second, nil)
+	m, err := Load(context.Background(), path, 12, 5*time.Second, nil, false)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestUntrustedToolNeedsPermission(t *testing.T) {
 func TestAutoApproveLetsAnUntrustedToolRun(t *testing.T) {
 	spec := fakeSpec(false)
 	spec.AutoApprove = []string{"echo"}
-	m, err := Load(context.Background(), writeConfig(t, map[string]Spec{"fake": spec}), 12, 5*time.Second, nil)
+	m, err := Load(context.Background(), writeConfig(t, map[string]Spec{"fake": spec}), 12, 5*time.Second, nil, false)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestAutoApproveLetsAnUntrustedToolRun(t *testing.T) {
 }
 
 func TestFlatLimitLoadsNothingAndSaysSo(t *testing.T) {
-	m, err := Load(context.Background(), writeConfig(t, map[string]Spec{"fake": fakeSpec(true)}), 1, 5*time.Second, nil)
+	m, err := Load(context.Background(), writeConfig(t, map[string]Spec{"fake": fakeSpec(true)}), 1, 5*time.Second, nil, false)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestFlatLimitLoadsNothingAndSaysSo(t *testing.T) {
 func TestCurationAndBuiltinsWin(t *testing.T) {
 	spec := fakeSpec(true)
 	spec.Deny = []string{"slow"}
-	m, err := Load(context.Background(), writeConfig(t, map[string]Spec{"fake": spec}), 12, 5*time.Second, []string{"fake.echo"})
+	m, err := Load(context.Background(), writeConfig(t, map[string]Spec{"fake": spec}), 12, 5*time.Second, []string{"fake.echo"}, false)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -183,7 +183,9 @@ func TestCurationAndBuiltinsWin(t *testing.T) {
 }
 
 func TestTwoTimeoutsLeaveTheRun(t *testing.T) {
-	m, err := Load(context.Background(), writeConfig(t, map[string]Spec{"fake": fakeSpec(true)}), 12, 300*time.Millisecond, nil)
+	spec := fakeSpec(true)
+	spec.AutoApprove = []string{"slow"}
+	m, err := Load(context.Background(), writeConfig(t, map[string]Spec{"fake": spec}), 12, 300*time.Millisecond, nil, false)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -196,5 +198,63 @@ func TestTwoTimeoutsLeaveTheRun(t *testing.T) {
 	}
 	if _, err := slow.Run(context.Background(), nil, json.RawMessage(`{}`)); err == nil || !strings.Contains(err.Error(), "left the run") {
 		t.Fatalf("third call: %v", err)
+	}
+}
+
+func TestTrustedReadOnlyToolRunsUnattended(t *testing.T) {
+	m, err := Load(context.Background(), writeConfig(t, map[string]Spec{"fake": fakeSpec(true)}), 12, 5*time.Second, nil, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer m.Close()
+	out, err := m.Tools()[0].Run(context.Background(), nil, json.RawMessage(`{"text":"ok"}`))
+	if err != nil || out != "ok" {
+		t.Fatalf("read-only echo = %q, %v", out, err)
+	}
+}
+
+func TestTrustedToolWithoutReadOnlyHintNeedsPermission(t *testing.T) {
+	m, err := Load(context.Background(), writeConfig(t, map[string]Spec{"fake": fakeSpec(true)}), 12, 5*time.Second, nil, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer m.Close()
+	if _, err := m.Tools()[1].Run(context.Background(), nil, json.RawMessage(`{}`)); err == nil || !strings.Contains(err.Error(), "needs permission") {
+		t.Fatalf("a tool without readOnlyHint ran unattended: %v", err)
+	}
+}
+
+func TestDenialFollowsTrustAndAnnotations(t *testing.T) {
+	yes, no := true, false
+	read := ToolInfo{Name: "read", Annotations: Annotations{ReadOnlyHint: &yes}}
+	for _, c := range []struct {
+		name   string
+		spec   Spec
+		info   ToolInfo
+		denied bool
+	}{
+		{"trusted and read-only", Spec{Trusted: true}, read, false},
+		{"trusted without the hint", Spec{Trusted: true}, ToolInfo{Name: "write"}, true},
+		{"trusted with readOnlyHint false", Spec{Trusted: true}, ToolInfo{Name: "write", Annotations: Annotations{ReadOnlyHint: &no}}, true},
+		{"untrusted and read-only", Spec{}, read, true},
+		{"auto-approved", Spec{AutoApprove: []string{"write"}}, ToolInfo{Name: "write"}, false},
+	} {
+		if got := denial(c.spec, c.info) != ""; got != c.denied {
+			t.Errorf("%s: denied = %v, want %v", c.name, got, c.denied)
+		}
+	}
+}
+
+func TestOfflineHidesToolsThatReachOutside(t *testing.T) {
+	yes := true
+	open := ToolInfo{Name: "fetch", Annotations: Annotations{OpenWorldHint: &yes}}
+	if reachable(open, true) {
+		t.Fatal("an open-world tool was offered offline")
+	}
+	if !reachable(open, false) {
+		t.Fatal("an open-world tool was hidden online")
+	}
+	if !reachable(ToolInfo{Name: "local"}, true) {
+		t.Fatal("a tool without openWorldHint was hidden offline")
 	}
 }

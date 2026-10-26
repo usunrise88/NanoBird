@@ -38,6 +38,15 @@ type ToolInfo struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
+	Annotations Annotations     `json:"annotations"`
+}
+
+// Annotations are the hints a server gives about a tool. A hint the server leaves
+// out is nil. The client acts on them only for a trusted server (SPEC §6.4).
+type Annotations struct {
+	ReadOnlyHint    *bool `json:"readOnlyHint"`
+	DestructiveHint *bool `json:"destructiveHint"`
+	OpenWorldHint   *bool `json:"openWorldHint"`
 }
 
 // rpc is one JSON-RPC message, in either direction.
