@@ -50,8 +50,10 @@ func (l *Loop) chat(ctx context.Context, task string) Result {
 type Mode string
 
 // The two modes. A chat prompt gets one reply and no tools; a task gets the
-// routed toolset and the full loop.
+// routed toolset and the full loop. Auto is the mode of a session that leaves the
+// choice to the classifier.
 const (
+	ModeAuto Mode = "auto"
 	ModeChat Mode = "chat"
 	ModeTask Mode = "task"
 )
@@ -113,4 +115,22 @@ func Classify(task string) Mode {
 		return ModeChat
 	}
 	return ModeTask
+}
+
+// decide is the mode of a prompt. A mode that the client set holds. In auto, the
+// classifier decides (SPEC §4.1).
+func (l *Loop) decide(task string) Mode {
+	if l.mode == ModeChat || l.mode == ModeTask {
+		return l.mode
+	}
+	if l.on(mech.Layering) && Classify(task) == ModeChat {
+		return ModeChat
+	}
+	return ModeTask
+}
+
+// SetMode sets the mode of the prompts that follow (SPEC §8.4). Auto leaves the
+// choice to the classifier.
+func (l *Loop) SetMode(m Mode) {
+	l.mode = m
 }
