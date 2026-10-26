@@ -27,10 +27,11 @@ import (
 // its structured log, the tools and their environment, the loop, and the MCP
 // servers that the run loaded. The headless run and each ACP session build one.
 type runSetup struct {
-	log     *session.Log
-	logFile *os.File
-	lp      *loop.Loop
-	mgr     *mcp.Manager
+	log      *session.Log
+	logFile  *os.File
+	lp       *loop.Loop
+	mgr      *mcp.Manager
+	warnings []string
 }
 
 // setupOptions are the choices that a run is built with.
@@ -132,7 +133,8 @@ func (s *runSetup) build(ctx context.Context, ws *safety.Workspace, o setupOptio
 	if err != nil {
 		return err
 	}
-	for _, w := range s.mgr.Warnings {
+	s.warnings = s.mgr.Warnings
+	for _, w := range s.warnings {
 		fmt.Fprintf(o.warn, "nanobird: %s\n", w)
 	}
 	s.lp = loop.New(o.client, tools.NewRegistry(append(builtins, s.mgr.Tools()...)), env, s.log, loopCfg).WithLogger(logger)
