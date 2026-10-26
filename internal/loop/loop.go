@@ -614,6 +614,9 @@ func (l *Loop) write(kind string, data any) {
 		l.err = err
 	}
 	l.logEvent(data)
+	if m, ok := data.(mechanismRecord); ok {
+		l.observer.Mechanism(m.ID, m.Level)
+	}
 }
 
 // logEvent sends one transcript event to the structured log at a level that

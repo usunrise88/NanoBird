@@ -155,3 +155,9 @@ func (l *Loop) SetThinking(mode string) {
 	l.cfg.Thinking = mode == "on"
 	l.cfg.ThinkingPlan = mode == "plan"
 }
+
+// SetSwitches sets the mechanism switches of the prompts that follow. It is the
+// ablation of SPEC §10.4, as an ACP extension (SPEC §8.8).
+func (l *Loop) SetSwitches(sw mech.Switches) {
+	l.env.Switches = sw
+}
