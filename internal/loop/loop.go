@@ -256,6 +256,16 @@ func (l *Loop) generateWith(ctx context.Context, turn int, msgs []model.Message,
 	l.write("request", newRequestRecord(turn, req))
 	for attempt := 0; ; attempt++ {
 		r, err := l.once(ctx, req, shown)
+		var cut *thinkCut
+		if errors.As(err, &cut) {
+			// The thought passed its budget and the engine did not stop it (SPEC §4.5):
+			// the turn is retried without thinking, with the thought so far as context.
+			l.write("mechanism", mechanismRecord{ID: thinkBudgetID, Turn: turn, Event: "cut", Attempt: attempt + 1, Error: cut.Error()})
+			noThinking := false
+			req.Messages = keepThought(msgs, cut.partial)
+			req.Thinking, req.ReasoningBudget = &noThinking, 0
+			continue
+		}
 		if err == nil {
 			for i := range r.Calls {
 				if r.Calls[i].ID == "" {
@@ -296,8 +306,43 @@ func (l *Loop) thinkingFor(turn int, st *state) (bool, int) {
 	return false, 0
 }
 
-// once runs one streamed call and collects its reply.
+// once runs one streamed call and collects its reply. A reasoning budget is enforced
+// here when the engine does not enforce it: the stream is aborted once the thought
+// passes the budget, and once returns a thinkCut (SPEC §4.5).
 func (l *Loop) once(ctx context.Context, req model.Request, shown bool) (reply, error) {
+	if req.ReasoningBudget <= 0 || req.Thinking == nil || !*req.Thinking {
+		return l.collect(ctx, req, shown)
+	}
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
+	var thought strings.Builder
+	cutOff := false
+	sink := model.Sink{Reasoning: func(piece string) {
+		thought.WriteString(piece)
+		if shown {
+			l.observer.Reasoning(piece)
+		}
+		if !cutOff && thought.Len() > req.ReasoningBudget*charsPerToken {
+			cutOff = true
+			stop()
+		}
+	}}
+	if shown {
+		sink.Text = l.observer.Text
+	}
+	s, err := l.client.Complete(ctx, req)
+	if err != nil {
+		return reply{}, err
+	}
+	r, err := model.CollectWith(s, sink)
+	if cutOff {
+		return reply{}, &thinkCut{budget: req.ReasoningBudget, partial: thought.String()}
+	}
+	return r, err
+}
+
+// collect runs one streamed call and collects its reply, without a budget.
+func (l *Loop) collect(ctx context.Context, req model.Request, shown bool) (reply, error) {
 	s, err := l.client.Complete(ctx, req)
 	if err != nil {
 		return reply{}, err
@@ -306,6 +351,32 @@ func (l *Loop) once(ctx context.Context, req model.Request, shown bool) (reply, 
 		return model.Collect(s)
 	}
 	return model.CollectWith(s, model.Sink{Text: l.observer.Text, Reasoning: l.observer.Reasoning})
+}
+
+// thinkBudgetID names the thinking budget in the transcript (SPEC §4.5).
+const thinkBudgetID = "think_budget"
+
+// charsPerToken is how the budget is counted when the client sees text: about four
+// characters to a token of English. The engine counts tokens, and where it enforces the
+// budget, it closes the thought before this cut can fire.
+const charsPerToken = 4
+
+// thinkCut is the error of a stream that was aborted at its reasoning budget. It keeps
+// the thought that was written before the cut.
+type thinkCut struct {
+	budget  int
+	partial string
+}
+
+func (c *thinkCut) Error() string {
+	return fmt.Sprintf("the thought passed its budget of %d tokens", c.budget)
+}
+
+// keepThought adds the thought of a cut turn to the messages of its retry, so that the
+// reasoning written so far is kept as context (SPEC §4.5).
+func keepThought(msgs []model.Message, thought string) []model.Message {
+	note := "Your reasoning for this turn reached its budget and was cut. It is kept here for context. Answer now, without thinking further.\n\n" + thought
+	return append(msgs[:len(msgs):len(msgs)], model.Message{Role: model.RoleUser, Content: note})
 }
 
 // rescue reads tool calls the model wrote as text (M5, SPEC §5.5).
