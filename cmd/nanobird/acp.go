@@ -11,8 +11,10 @@ import (
 	"strings"
 
 	"github.com/usunrise88/nanobird/internal/acp"
+	"github.com/usunrise88/nanobird/internal/config"
 	"github.com/usunrise88/nanobird/internal/loop"
 	"github.com/usunrise88/nanobird/internal/mech"
+	"github.com/usunrise88/nanobird/internal/model/openai"
 )
 
 // acpCommand is `nanobird acp` (SPEC §8): an ACP agent over stdio. The client gives
@@ -66,7 +68,7 @@ func acpCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, versio
 				return nil, err
 			}
 		}
-		return &sessionRunner{setup: s}, nil
+		return &sessionRunner{setup: s, ctx: ctx, root: workspace, cfg: cfg, flags: flags, client: client}, nil
 	}
 	if err := acp.Serve(ctx, acp.NewAgent(open, version), stdin, stdout); err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintf(stderr, "nanobird acp: %v\n", err)
@@ -100,9 +102,50 @@ func (c clientIO) RunTerminal(ctx context.Context, command string, args []string
 	return c.Observer.RunTerminal(ctx, command, args, cwd)
 }
 
-// sessionRunner is one session of the ACP agent: its prompts run on one setup.
+// sessionRunner is one session of the ACP agent: its prompts run on one setup. It
+// keeps the configuration and the engine client, so that the options can change them.
 type sessionRunner struct {
-	setup *runSetup
+	setup  *runSetup
+	ctx    context.Context
+	root   string
+	cfg    config.Config
+	flags  *engineFlags
+	client *openai.Client
+}
+
+// Offline is the offline option of the session.
+func (r *sessionRunner) Offline() bool { return r.cfg.Offline }
+
+// SetOffline changes the offline option, and starts the MCP servers again under it.
+func (r *sessionRunner) SetOffline(offline bool) error {
+	cfg := r.cfg
+	cfg.Offline = offline
+	if err := r.setup.reloadMCP(r.ctx, cfg, r.root); err != nil {
+		return err
+	}
+	r.cfg = cfg
+	return nil
+}
+
+// Model is the model name of the session.
+func (r *sessionRunner) Model() string { return r.cfg.Model.Name }
+
+// SetModel changes the model of the session, with a client for that model.
+func (r *sessionRunner) SetModel(name string) error {
+	cfg := r.cfg
+	cfg.Model.Name = name
+	client, err := r.flags.client(cfg)
+	if err != nil {
+		return err
+	}
+	r.setup.lp.SetClient(client)
+	r.client, r.cfg = client, cfg
+	return nil
+}
+
+// Models lists the models that the engine serves.
+func (r *sessionRunner) Models(ctx context.Context) ([]string, error) {
+	return r.client.ListModels(ctx)
 }
 
 // ID is the session's id, which names its transcript.

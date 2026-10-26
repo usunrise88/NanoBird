@@ -72,6 +72,10 @@ func Load(ctx context.Context, path string, flatLimit int, callTimeout time.Dura
 	var listed []candidate
 	for _, name := range slices.Sorted(maps.Keys(f.Servers)) {
 		spec := f.Servers[name]
+		if offline && spec.URL != "" {
+			m.Warnings = append(m.Warnings, fmt.Sprintf("mcp server %s is reached over a URL, which offline mode does not start", name))
+			continue
+		}
 		sctx, cancel := context.WithTimeout(ctx, startTimeout)
 		c, err := Start(sctx, name, spec)
 		if err != nil {

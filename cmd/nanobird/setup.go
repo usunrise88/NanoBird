@@ -144,6 +144,30 @@ func (s *runSetup) build(ctx context.Context, ws *safety.Workspace, o setupOptio
 	return nil
 }
 
+// reloadMCP starts the MCP servers again under cfg, after the offline option changed,
+// and puts their tools in the run's registry (SPEC §6.4, §8.4).
+func (s *runSetup) reloadMCP(ctx context.Context, cfg config.Config, root string) error {
+	mcpPath := cfg.MCP.Config
+	if !filepath.IsAbs(mcpPath) {
+		mcpPath = filepath.Join(root, ".nanobird", mcpPath)
+	}
+	builtins := tools.Builtins()
+	names := make([]string, 0, len(builtins))
+	for _, t := range builtins {
+		names = append(names, t.Name)
+	}
+	mgr, err := mcp.Load(ctx, mcpPath, cfg.MCP.FlatLimit, time.Duration(cfg.MCP.CallTimeoutS)*time.Second, names, cfg.Offline)
+	if err != nil {
+		return err
+	}
+	if s.mgr != nil {
+		s.mgr.Close()
+	}
+	s.mgr = mgr
+	s.lp.SetTools(tools.NewRegistry(append(builtins, mgr.Tools()...)))
+	return nil
+}
+
 // Close releases the run: its MCP servers, its log file and its transcript.
 func (s *runSetup) Close() {
 	if s.mgr != nil {

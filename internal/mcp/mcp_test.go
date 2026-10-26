@@ -258,3 +258,15 @@ func TestOfflineHidesToolsThatReachOutside(t *testing.T) {
 		t.Fatal("a tool without openWorldHint was hidden offline")
 	}
 }
+
+func TestOfflineDoesNotStartURLServers(t *testing.T) {
+	path := writeConfig(t, map[string]Spec{"web": {URL: "http://127.0.0.1:1", Trusted: true}})
+	m, err := Load(context.Background(), path, 12, 5*time.Second, nil, true)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer m.Close()
+	if len(m.Tools()) != 0 || len(m.Warnings) != 1 || !strings.Contains(m.Warnings[0], "offline") {
+		t.Fatalf("tools = %v, warnings = %v", toolNames(m), m.Warnings)
+	}
+}

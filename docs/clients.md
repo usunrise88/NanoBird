@@ -15,9 +15,15 @@ The agent speaks ACP v1 over stdio. Stdout carries the protocol only; logs go to
 
 ## What works today
 
-- `initialize`, `session/new`, `session/prompt` and `session/cancel`.
-- Session updates: the model's text as it streams, each tool call with its kind, path and status, the output of each call, the diff of an edit, and the plan from the todo list.
-- A prompt continues the conversation of the session before it.
-- A prompt ends with one of the stop reasons of SPEC §4.3. A cancelled prompt answers `cancelled`.
+- Methods: `initialize`, `authenticate` (no methods to run), `session/new`, `session/load`, `session/resume`, `session/list`, `session/close`, `session/prompt`, `session/cancel`, `session/set_mode` and `session/set_config_option`.
+- Session updates: the model's text and its thinking as they stream, each tool call with its kind, path and status, the output of each call and the diff of an edit, the plan from the todo list, the usage of each reply, the title from the first task, and the chat or task decision of each prompt. Setup warnings and compactions come as short messages.
+- Permissions: a shell command that a safety ring stops asks the client, which can allow it once, allow its command family for the session (ring 2 only), or reject it.
+- Config options: `thinking` (off, plan or on), `offline`, and `model` when the engine lists its models. Values apply from the next prompt.
+- The client's file system and terminal, when the client offers them and the configuration allows: `acp.client_fs: read` and `acp.client_terminal: on`. Both are off by default.
+- Extensions: `_meta.nanobird` on a tool call update that a mechanism changed, `_nanobird/stats` for a session's counters, and `_nanobird/ablation` to set the mechanisms a session leaves off, before its first prompt.
 
-Not yet: `session/load`, `session/list`, `session/close`, `session/resume`, permission prompts (a ring 2 or 3 call is refused, because the agent runs unattended), modes and config options, thinking, usage and notices, and the client's file system and terminal. The stage-2 gate (SPEC §12) also needs the ACP test compatibility kit in CI, which is not in place yet.
+## Not yet
+
+- `session/delete`: the SDK's agent interface has no such method.
+- `tool_format` is not offered: strict mode waits for the native NanoLLM backend.
+- The ACP test compatibility kit of SPEC §8.1 is not in CI, so the stage-2 gate G2 is open.

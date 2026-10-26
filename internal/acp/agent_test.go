@@ -224,6 +224,16 @@ func (r *loopRunner) SetThinking(mode string) { r.lp.SetThinking(mode) }
 
 func (r *loopRunner) Notices() []string { return nil }
 
+func (r *loopRunner) Offline() bool { return false }
+
+func (r *loopRunner) SetOffline(bool) error { return nil }
+
+func (r *loopRunner) Model() string { return "" }
+
+func (r *loopRunner) SetModel(string) error { return nil }
+
+func (r *loopRunner) Models(context.Context) ([]string, error) { return nil, nil }
+
 func (r *loopRunner) SetAblation(mechanisms []string) error {
 	sw, err := mech.Parse(strings.Join(mechanisms, ","))
 	if err != nil {
@@ -254,6 +264,16 @@ func (s stubRunner) SetThinking(string) {}
 func (s stubRunner) SetAblation([]string) error { return nil }
 
 func (s stubRunner) Notices() []string { return s.notices }
+
+func (s stubRunner) Offline() bool { return false }
+
+func (s stubRunner) SetOffline(bool) error { return nil }
+
+func (s stubRunner) Model() string { return "" }
+
+func (s stubRunner) SetModel(string) error { return nil }
+
+func (s stubRunner) Models(context.Context) ([]string, error) { return nil, nil }
 
 func (s stubRunner) Close() {}
 
@@ -558,11 +578,11 @@ func TestThinkingOptionIsOfferedAndSet(t *testing.T) {
 	f := newFixture(t, loopOpen(fake.New()))
 	id := f.newSession(t)
 	resp, err := f.conn.NewSession(context.Background(), sdk.NewSessionRequest{Cwd: f.dir, McpServers: []sdk.McpServer{}})
-	if err != nil || len(resp.ConfigOptions) != 1 || resp.ConfigOptions[0].Select == nil || resp.ConfigOptions[0].Select.Id != "thinking" || resp.ConfigOptions[0].Select.CurrentValue != "off" {
+	if err != nil || len(resp.ConfigOptions) < 1 || resp.ConfigOptions[0].Select == nil || resp.ConfigOptions[0].Select.Id != "thinking" || resp.ConfigOptions[0].Select.CurrentValue != "off" {
 		t.Fatalf("config options = %+v, %v", resp.ConfigOptions, err)
 	}
 	set, err := f.conn.SetSessionConfigOption(context.Background(), sdk.SetSessionConfigOptionRequest{ValueId: &sdk.SetSessionConfigOptionValueId{SessionId: id, ConfigId: "thinking", Value: "plan"}})
-	if err != nil || len(set.ConfigOptions) != 1 || set.ConfigOptions[0].Select.CurrentValue != "plan" {
+	if err != nil || len(set.ConfigOptions) < 1 || set.ConfigOptions[0].Select.CurrentValue != "plan" {
 		t.Fatalf("SetSessionConfigOption = %+v, %v", set, err)
 	}
 	if _, err := f.conn.SetSessionConfigOption(context.Background(), sdk.SetSessionConfigOptionRequest{ValueId: &sdk.SetSessionConfigOptionValueId{SessionId: id, ConfigId: "thinking", Value: "fancy"}}); err == nil {
@@ -715,5 +735,63 @@ func TestNoticesAreSaidBeforeThePrompt(t *testing.T) {
 	f.prompt(t, id, "Go.")
 	if got, want := f.rec.seen(), []string{"text"}; !equal(got, want) || f.rec.updates[0].AgentMessageChunk == nil {
 		t.Fatalf("updates = %v, want the notice as a message", got)
+	}
+}
+
+// optionRunner is a Runner that keeps the model and offline settings it is given.
+type optionRunner struct {
+	stubRunner
+	models     []string
+	gotOffline bool
+	gotModel   string
+}
+
+func (r *optionRunner) Models(context.Context) ([]string, error) { return r.models, nil }
+
+func (r *optionRunner) Model() string { return "a" }
+
+func (r *optionRunner) SetModel(name string) error {
+	r.gotModel = name
+	return nil
+}
+
+func (r *optionRunner) SetOffline(offline bool) error {
+	r.gotOffline = offline
+	return nil
+}
+
+func TestModelAndOfflineApplyAtTheNextPrompt(t *testing.T) {
+	r := &optionRunner{
+		stubRunner: stubRunner{run: func(context.Context, string) loop.Result { return loop.Result{Stop: loop.StopEndTurn} }},
+		models:     []string{"a", "b"},
+	}
+	f := newFixture(t, func(string, string, loop.Observer) (Runner, error) { return r, nil })
+	id := f.newSession(t)
+	ctx := context.Background()
+	set, err := f.conn.SetSessionConfigOption(ctx, sdk.SetSessionConfigOptionRequest{ValueId: &sdk.SetSessionConfigOptionValueId{SessionId: id, ConfigId: "model", Value: "b"}})
+	if err != nil {
+		t.Fatalf("set model: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, o := range set.ConfigOptions {
+		if o.Select != nil {
+			ids[string(o.Select.Id)] = true
+		}
+		if o.Boolean != nil {
+			ids[string(o.Boolean.Id)] = true
+		}
+	}
+	if !ids["thinking"] || !ids["offline"] || !ids["model"] {
+		t.Fatalf("config options = %v", ids)
+	}
+	if _, err := f.conn.SetSessionConfigOption(ctx, sdk.SetSessionConfigOptionRequest{ValueId: &sdk.SetSessionConfigOptionValueId{SessionId: id, ConfigId: "model", Value: "zzz"}}); err == nil {
+		t.Fatal("an unknown model was accepted")
+	}
+	if _, err := f.conn.SetSessionConfigOption(ctx, sdk.SetSessionConfigOptionRequest{Boolean: &sdk.SetSessionConfigOptionBoolean{SessionId: id, ConfigId: "offline", Value: true}}); err != nil {
+		t.Fatalf("set offline: %v", err)
+	}
+	f.prompt(t, id, "Go.")
+	if r.gotModel != "b" || !r.gotOffline {
+		t.Fatalf("the next prompt ran with model %q, offline %v", r.gotModel, r.gotOffline)
 	}
 }
