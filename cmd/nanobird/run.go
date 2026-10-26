@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -30,6 +31,7 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	taskFile := fs.String("task", "", "file with the task text (required, unless --resume is given)")
 	resume := fs.String("resume", "", "continue the session with this id from its last checkpoint (SPEC §9.3)")
+	logLevel := fs.String("log-level", envDefault("NANOBIRD_LOG_LEVEL", "info"), "debug, info, warn or error; prompts are logged at debug only (SPEC §9.4)")
 	unsafe := fs.Bool("unsafe", false, "turn rings 1 to 3 off; ring 4 stays on (NANOBIRD_UNSAFE=1 does the same)")
 	flags := addEngineFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -45,8 +47,13 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "nanobird run: %v\n", err)
 		return 2
 	}
-	if cfg.Loop.Thinking == "plan" {
-		fmt.Fprintln(stderr, "nanobird run: loop.thinking plan is not implemented yet; use off or on")
+	if cfg.Loop.ToolFormat == "strict" {
+		fmt.Fprintln(stderr, "nanobird run: loop.tool_format strict needs the native NanoLLM backend (RFC R4), which is not built yet; use rescue")
+		return 2
+	}
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(*logLevel)); err != nil {
+		fmt.Fprintf(stderr, "nanobird run: --log-level: %v\n", err)
 		return 2
 	}
 	task := ""
@@ -89,6 +96,18 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer func() { _ = log.Close() }()
+	logDir := filepath.Join(ws.Root(), ".nanobird", "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		fmt.Fprintf(stderr, "nanobird run: %v\n", err)
+		return 1
+	}
+	logFile, err := os.OpenFile(filepath.Join(logDir, log.ID()+".log"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	if err != nil {
+		fmt.Fprintf(stderr, "nanobird run: %v\n", err)
+		return 1
+	}
+	defer func() { _ = logFile.Close() }()
+	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(stderr, logFile), &slog.HandlerOptions{Level: level}))
 
 	env := &tools.Env{
 		Workspace:    ws,
@@ -116,6 +135,8 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 		OutputCapTokens: cfg.Loop.OutputCapTokens,
 		Temperature:     cfg.Loop.Temperature,
 		Thinking:        cfg.Loop.Thinking == "on",
+		ThinkingPlan:    cfg.Loop.Thinking == "plan",
+		ThinkingBudget:  cfg.Loop.ThinkingBudget,
 		ResultCapBytes:  cfg.Tools.ResultCapBytes,
 		RetryBackoff:    2 * time.Second,
 		ContextTokens:   cfg.Loop.ContextTokens,
@@ -141,7 +162,7 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 	for _, w := range mgr.Warnings {
 		fmt.Fprintf(stderr, "nanobird run: %s\n", w)
 	}
-	lp := loop.New(client, tools.NewRegistry(append(builtins, mgr.Tools()...)), env, log, loopCfg)
+	lp := loop.New(client, tools.NewRegistry(append(builtins, mgr.Tools()...)), env, log, loopCfg).WithLogger(logger)
 	var res loop.Result
 	if *resume != "" {
 		res = lp.Resume(ctx)
@@ -167,6 +188,14 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	return 1
+}
+
+// envDefault reads an environment variable, with a fallback when it is unset.
+func envDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // skillDirs lists where skills are read from: the workspace first, then the

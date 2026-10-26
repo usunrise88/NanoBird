@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -47,6 +48,11 @@ type Config struct {
 	ContextTokens int
 	// CompactionAt is the share of the context at which compaction runs (SPEC §4.4).
 	CompactionAt float64
+	// ThinkingPlan turns thinking on for the first turn of a task and for the turn
+	// after a finish rejection, with ThinkingBudget as the cap (SPEC §4.5).
+	ThinkingPlan bool
+	// ThinkingBudget caps the thinking tokens of a planning turn (SPEC §4.5).
+	ThinkingBudget int
 }
 
 // StopReason says why a run ended, in the terms of SPEC §4.3.
@@ -84,6 +90,9 @@ type Loop struct {
 	env    *tools.Env
 	log    *session.Log
 	cfg    Config
+	// logger receives the run's events in structured form (SPEC §9.4). Prompts
+	// are logged only at debug level. Nil logs nothing.
+	logger *slog.Logger
 	// err is the first transcript write that failed. A run with holes in its
 	// transcript cannot support a benchmark number, so it stops.
 	err error
@@ -93,6 +102,12 @@ type Loop struct {
 func New(client model.Client, reg *tools.Registry, env *tools.Env, log *session.Log, cfg Config) *Loop {
 	env.Catalog = reg
 	return &Loop{client: client, tools: reg, env: env, log: log, cfg: cfg}
+}
+
+// WithLogger sends the run's events to a structured logger (SPEC §9.4).
+func (l *Loop) WithLogger(logger *slog.Logger) *Loop {
+	l.logger = logger
+	return l
 }
 
 // state is what one run keeps between its turns.
@@ -110,6 +125,8 @@ type state struct {
 	productive    int
 	lastShell     string
 	lastRejection string
+	// afterRejection is set when the last finish was rejected (SPEC §4.5).
+	afterRejection bool
 }
 
 // Run executes one prompt. It returns when a finish is accepted, when a stop
@@ -149,7 +166,8 @@ func (l *Loop) run(ctx context.Context, st *state, first int) Result {
 		if err := l.compactIfNeeded(ctx, turn, st); err != nil {
 			return l.stop(Result{Stop: StopError, Turns: turn, Err: err})
 		}
-		r, err := l.generate(ctx, turn, st.msgs, l.tools.Offered(l.env.Enabled))
+		thinking, budget := l.thinkingFor(turn, st)
+		r, err := l.generateWith(ctx, turn, st.msgs, l.tools.Offered(l.env.Enabled), thinking, budget)
 		if err != nil {
 			if ctx.Err() != nil {
 				return l.stop(Result{Stop: StopCancelled, Turns: turn, Err: err})
@@ -171,6 +189,7 @@ func (l *Loop) run(ctx context.Context, st *state, first int) Result {
 			continue
 		}
 		st.msgs = append(st.msgs, model.Message{Role: model.RoleAssistant, Content: r.Text, ToolCalls: r.Calls})
+		st.afterRejection = false
 		executed := 0
 		for _, call := range r.Calls {
 			if call.Name == "finish" {
@@ -207,13 +226,19 @@ type reply = model.Reply
 // generate asks the model for one reply, offering the given tools. With the
 // resilience mechanism on (M7), a failed call is retried with doubling backoff.
 func (l *Loop) generate(ctx context.Context, turn int, msgs []model.Message, offered []model.Tool) (reply, error) {
-	thinking := l.cfg.Thinking
+	return l.generateWith(ctx, turn, msgs, offered, l.cfg.Thinking, 0)
+}
+
+// generateWith is generate with the thinking policy of the turn: whether to think,
+// and the reasoning budget that caps it.
+func (l *Loop) generateWith(ctx context.Context, turn int, msgs []model.Message, offered []model.Tool, thinking bool, budget int) (reply, error) {
 	req := model.Request{
-		Messages:    msgs,
-		Tools:       offered,
-		Temperature: l.cfg.Temperature,
-		MaxTokens:   l.cfg.OutputCapTokens,
-		Thinking:    &thinking,
+		Messages:        msgs,
+		Tools:           offered,
+		Temperature:     l.cfg.Temperature,
+		MaxTokens:       l.cfg.OutputCapTokens,
+		Thinking:        &thinking,
+		ReasoningBudget: budget,
 	}
 	l.write("request", newRequestRecord(turn, req))
 	for attempt := 0; ; attempt++ {
@@ -243,6 +268,19 @@ func (l *Loop) generate(ctx context.Context, turn int, msgs []model.Message, off
 		case <-time.After(l.cfg.RetryBackoff << attempt):
 		}
 	}
+}
+
+// thinkingFor sets the thinking policy of a turn. Plan mode thinks on the first
+// turn and after a finish rejection; every other turn follows the configuration
+// (SPEC §4.5).
+func (l *Loop) thinkingFor(turn int, st *state) (bool, int) {
+	if !l.cfg.ThinkingPlan {
+		return l.cfg.Thinking, 0
+	}
+	if turn == 1 || st.afterRejection {
+		return true, l.cfg.ThinkingBudget
+	}
+	return false, 0
 }
 
 // once runs one streamed call and collects its reply.
@@ -338,6 +376,7 @@ func (l *Loop) finish(ctx context.Context, st *state, turn int, call model.ToolC
 		return l.stop(Result{Stop: StopEndTurn, Turns: turn, Summary: args.Summary, Unverified: decision.Unverified}), true
 	}
 	st.lastRejection = decision.Message
+	st.afterRejection = true
 	st.msgs = append(st.msgs, toolMessage(call.ID, decision.Message))
 	return Result{}, false
 }
@@ -517,6 +556,36 @@ func (l *Loop) write(kind string, data any) {
 	}
 	if err := l.log.Write(kind, data); err != nil {
 		l.err = err
+	}
+	l.logEvent(data)
+}
+
+// logEvent sends one transcript event to the structured log at a level that
+// matches its weight. Prompts and message text appear only at debug (SPEC §9.4).
+func (l *Loop) logEvent(data any) {
+	if l.logger == nil {
+		return
+	}
+	switch rec := data.(type) {
+	case taskRecord:
+		l.logger.Info("task started", "turn_budget", l.cfg.MaxTurns)
+		l.logger.Debug("prompt", "text", rec.Text)
+	case mechanismRecord:
+		l.logger.Info("mechanism", "id", rec.ID, "event", rec.Event, "turn", rec.Turn)
+	case judgementRecord:
+		l.logger.Info("finish judged", "check", rec.Check, "accepted", rec.Accepted, "unverified", rec.Unverified)
+	case stopRecord:
+		l.logger.Info("run stopped", "reason", rec.Reason, "turns", rec.Turns, "unverified", rec.Unverified, "blocked", rec.Blocker != "", "error", rec.Error)
+	case resumeRecord:
+		l.logger.Info("run resumed", "from_turn", rec.FromTurn)
+	case requestRecord:
+		l.logger.Debug("request", "turn", rec.Turn, "messages", len(rec.Messages), "tools", len(rec.Tools))
+	case replyRecord:
+		l.logger.Debug("reply", "turn", rec.Turn, "finish", rec.Finish, "calls", len(rec.Calls))
+	case toolCallRecord:
+		l.logger.Debug("tool call", "turn", rec.Turn, "name", rec.Name)
+	case toolResultRecord:
+		l.logger.Debug("tool result", "turn", rec.Turn, "name", rec.Name, "ok", rec.OK)
 	}
 }
 
