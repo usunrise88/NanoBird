@@ -31,13 +31,15 @@ type runSetup struct {
 	logFile  *os.File
 	lp       *loop.Loop
 	mgr      *mcp.Manager
+	servers  map[string]mcp.Spec // the MCP servers the client passed to the session
 	warnings []string
 }
 
 // setupOptions are the choices that a run is built with.
 type setupOptions struct {
 	workspace  string
-	resume     string // the session to continue, or "" for a new one
+	resume     string              // the session to continue, or "" for a new one
+	servers    map[string]mcp.Spec // the MCP servers the client passed (SPEC §6.4)
 	cfg        config.Config
 	client     model.Client
 	level      slog.Level
@@ -129,7 +131,8 @@ func (s *runSetup) build(ctx context.Context, ws *safety.Workspace, o setupOptio
 	for _, t := range builtins {
 		builtinNames = append(builtinNames, t.Name)
 	}
-	s.mgr, err = mcp.Load(ctx, mcpPath, o.cfg.MCP.FlatLimit, time.Duration(o.cfg.MCP.CallTimeoutS)*time.Second, builtinNames, o.cfg.Offline)
+	s.servers = o.servers
+	s.mgr, err = mcp.LoadWith(ctx, mcpPath, s.servers, o.cfg.MCP.FlatLimit, time.Duration(o.cfg.MCP.CallTimeoutS)*time.Second, builtinNames, o.cfg.Offline)
 	if err != nil {
 		return err
 	}
@@ -156,7 +159,7 @@ func (s *runSetup) reloadMCP(ctx context.Context, cfg config.Config, root string
 	for _, t := range builtins {
 		names = append(names, t.Name)
 	}
-	mgr, err := mcp.Load(ctx, mcpPath, cfg.MCP.FlatLimit, time.Duration(cfg.MCP.CallTimeoutS)*time.Second, names, cfg.Offline)
+	mgr, err := mcp.LoadWith(ctx, mcpPath, s.servers, cfg.MCP.FlatLimit, time.Duration(cfg.MCP.CallTimeoutS)*time.Second, names, cfg.Offline)
 	if err != nil {
 		return err
 	}

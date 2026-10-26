@@ -49,29 +49,34 @@ type Manager struct {
 	Warnings []string
 }
 
-// Load starts the servers of the config file and lists their tools. A missing
-// file means no servers. A server that fails to start is a warning, not an error.
-// builtin names the built-in tools; an MCP tool with the same name is hidden,
-// because the built-in wins (SPEC §6.4). Offline, tools that reach outside the
-// machine are hidden too.
+// Load is LoadWith without the servers that a client passed to its session.
 func Load(ctx context.Context, path string, flatLimit int, callTimeout time.Duration, builtin []string, offline bool) (*Manager, error) {
+	return LoadWith(ctx, path, nil, flatLimit, callTimeout, builtin, offline)
+}
+
+// LoadWith starts the servers of the config file and the extra servers that a
+// client passed to its session, and lists their tools. A missing file means no
+// servers. A server that fails to start is a warning, not an error. An extra server
+// with the name of a configured one is skipped with a warning (SPEC §6.4). builtin
+// names the built-in tools; an MCP tool with the same name is hidden, because the
+// built-in wins (SPEC §6.4). Offline, tools that reach outside the machine are
+// hidden too.
+func LoadWith(ctx context.Context, path string, extra map[string]Spec, flatLimit int, callTimeout time.Duration, builtin []string, offline bool) (*Manager, error) {
 	m := &Manager{}
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return m, nil
-	}
+	servers, err := readServers(path)
 	if err != nil {
 		return nil, err
 	}
-	var f file
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&f); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+	for _, name := range slices.Sorted(maps.Keys(extra)) {
+		if _, ok := servers[name]; ok {
+			m.Warnings = append(m.Warnings, fmt.Sprintf("mcp server %s from the client is already in mcp.json, so the client's entry is skipped", name))
+			continue
+		}
+		servers[name] = extra[name]
 	}
 	var listed []candidate
-	for _, name := range slices.Sorted(maps.Keys(f.Servers)) {
-		spec := f.Servers[name]
+	for _, name := range slices.Sorted(maps.Keys(servers)) {
+		spec := servers[name]
 		if offline && spec.URL != "" {
 			m.Warnings = append(m.Warnings, fmt.Sprintf("mcp server %s is reached over a URL, which offline mode does not start", name))
 			continue
@@ -110,6 +115,27 @@ func Load(ctx context.Context, path string, flatLimit int, callTimeout time.Dura
 		m.tools = append(m.tools, tools.NewExternal(name, cand.info.Description, cand.info.InputSchema, callFunc(cand, callTimeout)))
 	}
 	return m, nil
+}
+
+// readServers reads the servers of mcp.json. A missing file has no servers.
+func readServers(path string) (map[string]Spec, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]Spec{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var f file
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&f); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if f.Servers == nil {
+		return map[string]Spec{}, nil
+	}
+	return f.Servers, nil
 }
 
 // Tools returns the flat MCP tools, ready to join the built-in registry.

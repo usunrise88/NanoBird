@@ -16,6 +16,7 @@ import (
 
 	sdk "github.com/coder/acp-go-sdk"
 	"github.com/usunrise88/nanobird/internal/loop"
+	"github.com/usunrise88/nanobird/internal/mcp"
 	"github.com/usunrise88/nanobird/internal/session"
 )
 
@@ -53,8 +54,9 @@ type Runner interface {
 
 // Open starts a session in a workspace. An id that is not empty names a session of
 // that workspace to continue, from its transcript and its last checkpoint. The
-// observer hears what the session's prompts do.
-type Open func(workspace, id string, obs loop.Observer) (Runner, error)
+// servers are the MCP servers that the client passed to the session (SPEC §6.4).
+// The observer hears what the session's prompts do.
+type Open func(workspace, id string, servers map[string]mcp.Spec, obs loop.Observer) (Runner, error)
 
 // Agent serves ACP sessions. Each session has a Runner, and a prompt runs on it.
 type Agent struct {
@@ -134,6 +136,7 @@ func (a *Agent) Initialize(_ context.Context, p sdk.InitializeRequest) (sdk.Init
 			LoadSession: true,
 			SessionCapabilities: sdk.SessionCapabilities{
 				Close:  &sdk.SessionCloseCapabilities{},
+				Delete: &sdk.SessionDeleteCapabilities{},
 				List:   &sdk.SessionListCapabilities{},
 				Resume: &sdk.SessionResumeCapabilities{},
 			},
@@ -154,7 +157,7 @@ func (a *Agent) NewSession(_ context.Context, p sdk.NewSessionRequest) (sdk.NewS
 	if !filepath.IsAbs(p.Cwd) {
 		return sdk.NewSessionResponse{}, sdk.NewInvalidParams("cwd must be an absolute path")
 	}
-	s, err := a.start(p.Cwd, "")
+	s, err := a.start(p.Cwd, "", p.McpServers)
 	if err != nil {
 		return sdk.NewSessionResponse{}, err
 	}
@@ -164,7 +167,7 @@ func (a *Agent) NewSession(_ context.Context, p sdk.NewSessionRequest) (sdk.NewS
 // LoadSession continues a session of the workspace, and replays its history to the
 // client as session updates before it answers (SPEC §8.2).
 func (a *Agent) LoadSession(_ context.Context, p sdk.LoadSessionRequest) (sdk.LoadSessionResponse, error) {
-	s, err := a.attach(p.Cwd, p.SessionId)
+	s, err := a.attach(p.Cwd, p.SessionId, p.McpServers)
 	if err != nil {
 		return sdk.LoadSessionResponse{}, err
 	}
@@ -179,7 +182,7 @@ func (a *Agent) LoadSession(_ context.Context, p sdk.LoadSessionRequest) (sdk.Lo
 // ResumeSession continues a session of the workspace without replaying its history
 // (SPEC §8.2).
 func (a *Agent) ResumeSession(_ context.Context, p sdk.ResumeSessionRequest) (sdk.ResumeSessionResponse, error) {
-	s, err := a.attach(p.Cwd, p.SessionId)
+	s, err := a.attach(p.Cwd, p.SessionId, p.McpServers)
 	if err != nil {
 		return sdk.ResumeSessionResponse{}, err
 	}
@@ -221,23 +224,26 @@ func (a *Agent) ListSessions(_ context.Context, p sdk.ListSessionsRequest) (sdk.
 // UnstableDeleteSession deletes a session of the agent (SPEC §8.2). An open session is
 // closed first, and cancelled if a prompt runs. Its transcript and log move to the
 // trash of the workspace, so that the deletion can be undone by hand (SPEC §5.6).
+// A session that is gone, or that the agent has not listed, is not an error: the
+// delete changes nothing, as the ACP rule for delete says. The agent moves only the
+// sessions of the workspaces it has listed or opened.
 func (a *Agent) UnstableDeleteSession(_ context.Context, p sdk.UnstableDeleteSessionRequest) (sdk.UnstableDeleteSessionResponse, error) {
+	if !session.IsName(string(p.SessionId)) {
+		return sdk.UnstableDeleteSessionResponse{}, sdk.NewInvalidParams("not a session id: " + string(p.SessionId))
+	}
 	a.mu.Lock()
 	root, known := a.known[p.SessionId]
 	s, open := a.sessions[p.SessionId]
 	delete(a.sessions, p.SessionId)
 	a.mu.Unlock()
-	if !known {
-		return sdk.UnstableDeleteSessionResponse{}, sdk.NewInvalidParams("no such session: " + string(p.SessionId))
-	}
 	if open {
 		s.close()
 		<-s.closed
 	}
-	if err := session.Trash(root, string(p.SessionId), time.Now()); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return sdk.UnstableDeleteSessionResponse{}, sdk.NewInvalidParams("no such session: " + string(p.SessionId))
-		}
+	if !known {
+		return sdk.UnstableDeleteSessionResponse{}, nil
+	}
+	if err := session.Trash(root, string(p.SessionId), time.Now()); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return sdk.UnstableDeleteSessionResponse{}, sdk.NewInternalError(err.Error())
 	}
 	a.mu.Lock()
@@ -345,17 +351,6 @@ func (a *Agent) Logout(context.Context, sdk.LogoutRequest) (sdk.LogoutResponse, 
 // (off, plan or on), model, or offline. A value applies from the next prompt. The
 // answer lists the options with the values now set.
 func (a *Agent) SetSessionConfigOption(_ context.Context, p sdk.SetSessionConfigOptionRequest) (sdk.SetSessionConfigOptionResponse, error) {
-	if p.Boolean != nil {
-		if p.Boolean.ConfigId != "offline" {
-			return sdk.SetSessionConfigOptionResponse{}, sdk.NewInvalidParams("no such config option")
-		}
-		s, err := a.session(p.Boolean.SessionId)
-		if err != nil {
-			return sdk.SetSessionConfigOptionResponse{}, err
-		}
-		s.setOffline(p.Boolean.Value)
-		return sdk.SetSessionConfigOptionResponse{ConfigOptions: s.options()}, nil
-	}
 	if p.ValueId == nil {
 		return sdk.SetSessionConfigOptionResponse{}, sdk.NewInvalidParams("no such config option")
 	}
@@ -374,6 +369,11 @@ func (a *Agent) SetSessionConfigOption(_ context.Context, p sdk.SetSessionConfig
 		if err := s.setModel(value); err != nil {
 			return sdk.SetSessionConfigOptionResponse{}, err
 		}
+	case "offline":
+		if value != "on" && value != "off" {
+			return sdk.SetSessionConfigOptionResponse{}, sdk.NewInvalidParams("no such offline value: " + value)
+		}
+		s.setOffline(value == "on")
 	default:
 		return sdk.SetSessionConfigOptionResponse{}, sdk.NewInvalidParams("no such config option")
 	}
@@ -397,16 +397,18 @@ func (a *Agent) SetSessionMode(_ context.Context, p sdk.SetSessionModeRequest) (
 }
 
 // start opens a session in the workspace at cwd, continuing the session id when it
-// is not empty, and registers it under its id.
-func (a *Agent) start(cwd, id string) (*activeSession, error) {
+// is not empty, with the MCP servers the client passed. It registers the session
+// under its id.
+func (a *Agent) start(cwd, id string, list []sdk.McpServer) (*activeSession, error) {
+	servers, notes := mcpSpecs(list)
 	obs := &updates{agent: a, root: cwd, started: time.Now()}
-	runner, err := a.open(cwd, id, obs)
+	runner, err := a.open(cwd, id, servers, obs)
 	if err != nil {
 		return nil, sdk.NewInternalError(err.Error())
 	}
 	s := &activeSession{
 		id: sdk.SessionId(runner.ID()), runner: runner, obs: obs, mode: "auto",
-		thinking: runner.Thinking(), titled: id != "", notices: runner.Notices(),
+		thinking: runner.Thinking(), titled: id != "", notices: append(runner.Notices(), notes...),
 		offline: runner.Offline(), appliedOffline: runner.Offline(),
 		model: runner.Model(), appliedModel: runner.Model(),
 		models: listModels(runner),
@@ -420,9 +422,10 @@ func (a *Agent) start(cwd, id string) (*activeSession, error) {
 	return s, nil
 }
 
-// attach returns the session with id, opening it from its transcript when it is not
-// open yet.
-func (a *Agent) attach(cwd string, id sdk.SessionId) (*activeSession, error) {
+// attach returns the session with id, opening it from its transcript with the MCP
+// servers the client passed when it is not open yet. An open session keeps the
+// servers it started with.
+func (a *Agent) attach(cwd string, id sdk.SessionId, list []sdk.McpServer) (*activeSession, error) {
 	if !filepath.IsAbs(cwd) {
 		return nil, sdk.NewInvalidParams("cwd must be an absolute path")
 	}
@@ -432,7 +435,36 @@ func (a *Agent) attach(cwd string, id sdk.SessionId) (*activeSession, error) {
 	if ok {
 		return s, nil
 	}
-	return a.start(cwd, string(id))
+	return a.start(cwd, string(id), list)
+}
+
+// mcpSpecs turns the MCP servers that a session request carries into the servers the
+// session starts. Stdio and streamable HTTP servers start. A server with another
+// transport does not, and the client hears why (SPEC §6.4).
+func mcpSpecs(list []sdk.McpServer) (map[string]mcp.Spec, []string) {
+	specs := map[string]mcp.Spec{}
+	var notes []string
+	for _, m := range list {
+		switch {
+		case m.Stdio != nil:
+			env := map[string]string{}
+			for _, v := range m.Stdio.Env {
+				env[v.Name] = v.Value
+			}
+			specs[m.Stdio.Name] = mcp.Spec{Command: m.Stdio.Command, Args: m.Stdio.Args, Env: env}
+		case m.Http != nil:
+			headers := map[string]string{}
+			for _, h := range m.Http.Headers {
+				headers[h.Name] = h.Value
+			}
+			specs[m.Http.Name] = mcp.Spec{URL: m.Http.Url, Headers: headers}
+		case m.Sse != nil:
+			notes = append(notes, "MCP server "+m.Sse.Name+" uses the SSE transport, which NanoBird does not start")
+		case m.Acp != nil:
+			notes = append(notes, "MCP server "+m.Acp.Name+" uses the ACP transport, which NanoBird does not start")
+		}
+	}
+	return specs, notes
 }
 
 // clientCaps is what the client offers.
@@ -575,12 +607,24 @@ func configOptions(thinking string, offline bool, model string, models []string)
 	think.Select.Description = &desc
 	opts := []sdk.SessionConfigOption{think}
 
-	local := sdk.NewSessionConfigOptionBoolean(offline)
-	local.Boolean.Id = "offline"
-	local.Boolean.Name = "Offline"
+	// Offline is a select: the ACP rule allows a boolean option only when the client
+	// advertised booleans, and the SDK does not say whether it did.
+	onOff := sdk.SessionConfigSelectOptionsUngrouped{{Name: "Off", Value: "off"}, {Name: "On", Value: "on"}}
+	current := "off"
+	if offline {
+		current = "on"
+	}
+	local := sdk.NewSessionConfigOptionSelect(sdk.SessionConfigValueId(current), sdk.SessionConfigSelectOptions{Ungrouped: &onOff})
+	local.Select.Id = "offline"
+	local.Select.Name = "Offline"
 	opts = append(opts, local)
 
 	if len(models) > 0 {
+		// The current model is always one of the choices, even when the engine does
+		// not list it, so the option never shows a value that it does not offer.
+		if !slices.Contains(models, model) {
+			models = append([]string{model}, models...)
+		}
 		var names sdk.SessionConfigSelectOptionsUngrouped
 		for _, m := range models {
 			names = append(names, sdk.SessionConfigSelectOption{Name: m, Value: sdk.SessionConfigValueId(m)})

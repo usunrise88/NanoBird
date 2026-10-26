@@ -13,6 +13,7 @@ import (
 	"github.com/usunrise88/nanobird/internal/acp"
 	"github.com/usunrise88/nanobird/internal/config"
 	"github.com/usunrise88/nanobird/internal/loop"
+	"github.com/usunrise88/nanobird/internal/mcp"
 	"github.com/usunrise88/nanobird/internal/mech"
 	"github.com/usunrise88/nanobird/internal/model/openai"
 )
@@ -35,7 +36,7 @@ func acpCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, versio
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	open := func(workspace, id string, obs loop.Observer) (acp.Runner, error) {
+	open := func(workspace, id string, servers map[string]mcp.Spec, obs loop.Observer) (acp.Runner, error) {
 		cfg, err := flags.load(workspace)
 		if err != nil {
 			return nil, err
@@ -47,6 +48,7 @@ func acpCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, versio
 		s, err := newRunSetup(ctx, setupOptions{
 			workspace:  workspace,
 			resume:     id,
+			servers:    servers,
 			cfg:        cfg,
 			client:     client,
 			level:      level,
