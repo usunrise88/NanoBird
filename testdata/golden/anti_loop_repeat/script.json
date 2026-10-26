@@ -1,0 +1,66 @@
+[
+  {
+    "calls": [
+      {
+        "name": "list_dir",
+        "arguments": "{}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "list_dir",
+        "arguments": "{}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "list_dir",
+        "arguments": "{}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "list_dir",
+        "arguments": "{}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "list_dir",
+        "arguments": "{}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "list_dir",
+        "arguments": "{}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"Listed the workspace.\"}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"Listed the workspace.\"}"
+      }
+    ]
+  }
+]

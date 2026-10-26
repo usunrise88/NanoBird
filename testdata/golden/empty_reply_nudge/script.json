@@ -1,4 +1,27 @@
 [
   {},
-  {"calls": [{"name": "finish", "arguments": "{\"summary\": \"Nothing to change.\"}"}]}
+  {
+    "calls": [
+      {
+        "name": "list_dir",
+        "arguments": "{}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"Nothing to change.\"}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"Nothing to change.\"}"
+      }
+    ]
+  }
 ]

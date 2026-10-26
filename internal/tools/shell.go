@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/usunrise88/nanobird/internal/mech"
 	"github.com/usunrise88/nanobird/internal/safety"
 )
 
@@ -68,6 +69,11 @@ func runRunShell(ctx context.Context, env *Env, args json.RawMessage) (string, e
 			return "", fmt.Errorf("refused by safety ring 1: %s", d.Reason)
 		case safety.Ask:
 			return "", fmt.Errorf("needs permission: %s; a run without a permission prompt denies it", d.Reason)
+		}
+	}
+	if env.Switches.On(mech.Boundary) {
+		if name, ok := safety.TouchesSensitive(a.Command); ok {
+			return "", fmt.Errorf("needs permission: the command names %s, a credential location; a run without a permission prompt denies it", name)
 		}
 	}
 	timeout := env.ShellTimeout

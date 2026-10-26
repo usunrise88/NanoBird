@@ -94,7 +94,17 @@ type mechanismRecord struct {
 	Turn    int    `json:"turn"`
 	Event   string `json:"event"`
 	Attempt int    `json:"attempt,omitempty"`
+	Count   int    `json:"count,omitempty"`
 	Error   string `json:"error,omitempty"`
+}
+
+// judgementRecord is the finish gate's decision on one finish call (SPEC §5.3).
+type judgementRecord struct {
+	Turn       int    `json:"turn"`
+	Check      string `json:"check,omitempty"`
+	Accepted   bool   `json:"accepted"`
+	Unverified bool   `json:"unverified,omitempty"`
+	Message    string `json:"message,omitempty"`
 }
 
 type toolCallRecord struct {
@@ -113,8 +123,10 @@ type toolResultRecord struct {
 }
 
 type stopRecord struct {
-	Reason  string `json:"reason"`
-	Turns   int    `json:"turns"`
-	Summary string `json:"summary,omitempty"`
-	Error   string `json:"error,omitempty"`
+	Reason     string `json:"reason"`
+	Turns      int    `json:"turns"`
+	Summary    string `json:"summary,omitempty"`
+	Unverified bool   `json:"unverified,omitempty"`
+	Blocker    string `json:"blocker,omitempty"`
+	Error      string `json:"error,omitempty"`
 }

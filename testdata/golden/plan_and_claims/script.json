@@ -1,0 +1,66 @@
+[
+  {
+    "calls": [
+      {
+        "name": "todo",
+        "arguments": "{\"action\": \"set\", \"items\": [\"write draft\", \"write report\"]}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "create_file",
+        "arguments": "{\"path\": \"draft.txt\", \"content\": \"draft\\n\"}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"Wrote report.md.\"}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "todo",
+        "arguments": "{\"action\": \"update\", \"all\": true}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"Wrote report.md.\"}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "create_file",
+        "arguments": "{\"path\": \"report.md\", \"content\": \"Done.\\n\"}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"Wrote report.md.\"}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"Wrote report.md.\"}"
+      }
+    ]
+  }
+]

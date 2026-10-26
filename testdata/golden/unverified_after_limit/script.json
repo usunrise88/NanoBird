@@ -1,0 +1,42 @@
+[
+  {
+    "calls": [
+      {
+        "name": "create_file",
+        "arguments": "{\"path\": \"a.txt\", \"content\": \"a\\n\"}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"Updated missing.md.\"}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"Updated missing.md.\"}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"Updated missing.md.\"}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"Updated missing.md.\"}"
+      }
+    ]
+  }
+]

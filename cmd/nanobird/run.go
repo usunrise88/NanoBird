@@ -104,10 +104,17 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 	if res.Summary != "" {
 		fmt.Fprintf(stdout, "summary: %s\n", res.Summary)
 	}
+	if res.Unverified {
+		fmt.Fprintln(stdout, "unverified: the finish was accepted after repeated rejections (SPEC §5.3)")
+	}
+	if res.Blocker != "" {
+		fmt.Fprintf(stdout, "blocker: %s\n", res.Blocker)
+	}
 	if res.Err != nil {
 		fmt.Fprintf(stderr, "nanobird run: %v\n", res.Err)
 	}
-	if res.Stop == loop.StopEndTurn {
+	// A run that ends unverified or blocked did not finish the task, so it fails.
+	if res.Stop == loop.StopEndTurn && !res.Unverified && res.Blocker == "" {
 		return 0
 	}
 	return 1

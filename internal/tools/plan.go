@@ -31,7 +31,8 @@ func (p *Plan) Open() []string {
 	return open
 }
 
-func (p *Plan) render() string {
+// Render lists the plan, one numbered item per line.
+func (p *Plan) Render() string {
 	if len(p.Items) == 0 {
 		return "(no plan)"
 	}
@@ -103,13 +104,13 @@ func runTodo(_ context.Context, env *Env, args json.RawMessage) (string, error) 
 			p.Items[i].Done = true
 		}
 		if len(unknown) > 0 {
-			return "", fmt.Errorf("no plan item matches %s; the plan is:\n%s", strings.Join(unknown, ", "), p.render())
+			return "", fmt.Errorf("no plan item matches %s; the plan is:\n%s", strings.Join(unknown, ", "), p.Render())
 		}
 	case "show":
 	default:
 		return "", fmt.Errorf("unknown action %q; use set, update or show", a.Action)
 	}
-	return p.render(), nil
+	return p.Render(), nil
 }
 
 var finishTool = Tool{
