@@ -201,10 +201,11 @@ func logLevelOf(name string) (slog.Level, error) {
 	return level, err
 }
 
-// refuseStrict says that tool_format strict waits for the native backend (SPEC §5.5).
+// refuseStrict says that tool_format strict needs the native backend (SPEC §5.5). The
+// OpenAI dialect has no tool format setting, so strict would not be honored there.
 func refuseStrict(cfg config.Config) error {
-	if cfg.Loop.ToolFormat == "strict" {
-		return errors.New("loop.tool_format strict needs the native NanoLLM backend (RFC R4), which is not built yet; use rescue")
+	if cfg.Loop.ToolFormat == "strict" && cfg.Model.Backend == "openai" {
+		return errors.New("loop.tool_format strict needs model.backend nanollm: the OpenAI dialect has no tool format setting; use rescue there")
 	}
 	return nil
 }
