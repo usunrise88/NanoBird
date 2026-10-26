@@ -261,7 +261,7 @@ func (l *Loop) generateWith(ctx context.Context, turn int, msgs []model.Message,
 		if errors.As(err, &cut) {
 			// The thought passed its budget and the engine did not stop it (SPEC §4.5):
 			// the turn is retried without thinking, with the thought so far as context.
-			l.write("mechanism", mechanismRecord{ID: thinkBudgetID, Turn: turn, Event: "cut", Attempt: attempt + 1, Error: cut.Error()})
+			l.write("mechanism", mechanismRecord{ID: mech.ThinkBudget, Turn: turn, Event: "cut", Attempt: attempt + 1, Error: cut.Error()})
 			noThinking := false
 			req.Messages = keepThought(msgs, cut.partial)
 			req.Thinking, req.ReasoningBudget = &noThinking, 0
@@ -311,7 +311,7 @@ func (l *Loop) thinkingFor(turn int, st *state) (bool, int) {
 // here when the engine does not enforce it: the stream is aborted once the thought
 // passes the budget, and once returns a thinkCut (SPEC §4.5).
 func (l *Loop) once(ctx context.Context, req model.Request, shown bool) (reply, error) {
-	if req.ReasoningBudget <= 0 || req.Thinking == nil || !*req.Thinking {
+	if req.ReasoningBudget <= 0 || req.Thinking == nil || !*req.Thinking || !l.on(mech.ThinkBudget) {
 		return l.collect(ctx, req, shown)
 	}
 	ctx, stop := context.WithCancel(ctx)
@@ -353,9 +353,6 @@ func (l *Loop) collect(ctx context.Context, req model.Request, shown bool) (repl
 	}
 	return model.CollectWith(s, model.Sink{Text: l.observer.Text, Reasoning: l.observer.Reasoning})
 }
-
-// thinkBudgetID names the thinking budget in the transcript (SPEC §4.5).
-const thinkBudgetID = "think_budget"
 
 // charsPerToken is how the budget is counted when the client sees text: about four
 // characters to a token of English. The engine counts tokens, and where it enforces the

@@ -17,9 +17,19 @@ func TestParseSwitchesOff(t *testing.T) {
 }
 
 func TestParseRefusesUnknownAndUnbuiltIds(t *testing.T) {
-	for _, list := range []string{"bogus", "think_budget", "plan_reinject", "resilience,disclosure"} {
+	for _, list := range []string{"bogus", "plan_reinject", "resilience,disclosure"} {
 		if _, err := Parse(list); err == nil {
 			t.Errorf("Parse(%q) was accepted", list)
 		}
+	}
+}
+
+func TestParseAcceptsTheBuiltThinkBudget(t *testing.T) {
+	sw, err := Parse(ThinkBudget)
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", ThinkBudget, err)
+	}
+	if sw.On(ThinkBudget) {
+		t.Fatal("the switched-off mechanism is still on")
 	}
 }

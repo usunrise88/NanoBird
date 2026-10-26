@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/usunrise88/nanobird/internal/mech"
 	"github.com/usunrise88/nanobird/internal/model"
 	"github.com/usunrise88/nanobird/internal/model/fake"
 	"github.com/usunrise88/nanobird/internal/tools"
@@ -84,5 +85,31 @@ func TestAThoughtWithinItsBudgetIsNotCut(t *testing.T) {
 		if hasCutNote(req) {
 			t.Fatalf("request %d carries the note of a cut thought, although the thought was within its budget", i)
 		}
+	}
+}
+
+func TestAThoughtPastItsBudgetIsKeptWhenItsMechanismIsOff(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.ThinkingPlan = true
+	cfg.ThinkingBudget = 8
+	h := newHarness(t, t.TempDir(), cfg,
+		fake.Reply{Reasoning: strings.Repeat("reasoning ", 20), Calls: []fake.Call{{Name: "list_dir", Arguments: "{}"}}},
+		finishWith("Done."), finishWith("Done."))
+	rec := withRecorder(h, cfg)
+	sw, err := mech.Parse(mech.ThinkBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.loop.SetSwitches(sw)
+	if res := h.loop.Run(context.Background(), "Look, then finish."); res.Err != nil {
+		t.Fatalf("the run failed: %v", res.Err)
+	}
+	for i, req := range rec.reqs {
+		if hasCutNote(req) {
+			t.Fatalf("request %d carries the note of a cut thought, although the mechanism is off", i)
+		}
+	}
+	if len(rec.reqs) == 0 || rec.reqs[0].ReasoningBudget != 8 {
+		t.Fatal("the first request lost its reasoning budget; only the NanoBird cut should be off")
 	}
 }

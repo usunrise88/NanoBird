@@ -38,6 +38,9 @@ const (
 	VerifyFeedback = "verify_feedback"
 	// WriteGuard is N1: create_file refuses a path that exists.
 	WriteGuard = "write_guard"
+
+	// ThinkBudget is N2 (SPEC §4.5): a thought past its budget is cut, and the turn is retried without thinking.
+	ThinkBudget = "think_budget"
 )
 
 // known lists every id in SPEC §5, so a typo is told apart from an id that is
@@ -53,7 +56,7 @@ var implemented = map[string]bool{
 	AntiLoop: true, Boundary: true, EditSafety: true, FinishGate: true,
 	Layering: true, Prefill: true, Compaction: true,
 	FormatRescue: true, Resilience: true, SelfCheck: true, ToolNameFix: true,
-	VerifyFeedback: true, WriteGuard: true,
+	VerifyFeedback: true, WriteGuard: true, ThinkBudget: true,
 }
 
 // Switches records which mechanisms a run has switched off. The zero value

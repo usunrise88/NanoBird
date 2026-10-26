@@ -104,10 +104,10 @@ func TestAblationAliasAddsToDisable(t *testing.T) {
 
 func TestValidationNamesTheBadSetting(t *testing.T) {
 	cases := map[string]string{
-		"loop:\n  thinking: maybe\n":               "loop.thinking",
-		"model:\n  backend: ollama\n":              "model.backend",
-		"mechanisms:\n  disable: [nope]\n":         "mechanisms.disable",
-		"mechanisms:\n  disable: [think_budget]\n": "not implemented yet",
+		"loop:\n  thinking: maybe\n":             "loop.thinking",
+		"model:\n  backend: ollama\n":            "model.backend",
+		"mechanisms:\n  disable: [nope]\n":       "mechanisms.disable",
+		"mechanisms:\n  disable: [disclosure]\n": "not implemented yet",
 	}
 	for body, want := range cases {
 		ws := writeWorkspaceConfig(t, body)
