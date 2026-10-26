@@ -14,7 +14,7 @@ export CGO_ENABLED := 0
 # Linux and Windows, amd64 and arm64. macOS is out for now (docs/ROADMAP.md).
 TARGETS     := linux/amd64 linux/arm64 windows/amd64 windows/arm64
 
-.PHONY: all build cross lint test test-race tidy clean help
+.PHONY: all build cross lint lang-check test test-race tidy clean help
 
 all: build
 
@@ -31,11 +31,15 @@ cross:
 		GOOS=$$os GOARCH=$$arch $(GO) build -ldflags "$(LDFLAGS)" -o $$out/nanobird$$ext ./cmd/nanobird; \
 	done
 
-## lint: vet, gofmt and golangci-lint when it is installed
-lint:
+## lint: vet, gofmt, English-only text and golangci-lint when it is installed
+lint: lang-check
 	$(GO) vet ./...
 	@gofmt -l cmd internal tools | tee /dev/stderr | (! read)
 	@if command -v golangci-lint >/dev/null; then golangci-lint run; fi
+
+## lang-check: fails on non-Latin letters in NanoBird's text (SPEC §5.13)
+lang-check:
+	$(GO) run ./tools/langcheck
 
 ## test: unit tests
 test:

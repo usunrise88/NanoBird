@@ -20,6 +20,8 @@ jobs:
       - run: go vet ./...
       - name: gofmt
         run: test -z "$(gofmt -l cmd internal tools)" || { gofmt -l cmd internal tools; exit 1; }
+      - name: English-only text (SPEC §5.13)
+        run: go run ./tools/langcheck
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.15

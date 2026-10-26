@@ -28,7 +28,9 @@ func main() {
 	switch verb := os.Args[1]; verb {
 	case "version":
 		fmt.Printf("nanobird %s (commit %s)\n", version, commit)
-	case "acp", "run", "doctor", "sessions":
+	case "run":
+		os.Exit(runTask(os.Args[2:], os.Stdout, os.Stderr))
+	case "acp", "doctor", "sessions":
 		fmt.Fprintf(os.Stderr, "nanobird: %s is not implemented yet\n", verb)
 		os.Exit(1)
 	default:
