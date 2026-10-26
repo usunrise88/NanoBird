@@ -19,6 +19,13 @@ type Env struct {
 	// Permit asks the client whether a call that a safety ring stopped may run
 	// (SPEC §5.11, §8.5). Nil means nobody can be asked, and the call is denied.
 	Permit func(ctx context.Context, p Permission) Answer
+	// ReadText reads a file through the client (SPEC §8.6). handled is false when the
+	// client does not read files for the session, and the tool reads the file itself.
+	ReadText func(ctx context.Context, abs string) (text string, handled bool, err error)
+	// RunTerminal runs a command in a terminal of the client (SPEC §8.6). handled is
+	// false when the client has no terminal for the session. The output carries the
+	// exit code, as a local run does.
+	RunTerminal func(ctx context.Context, command string, args []string, cwd string) (output string, handled bool, err error)
 	// allowed holds the command families that the client allowed for the rest of
 	// the session (SPEC §8.5).
 	allowed   map[string]bool

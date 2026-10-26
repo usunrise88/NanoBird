@@ -39,6 +39,12 @@ func newFixture(t *testing.T, open Open) *fixture {
 // it is removed after the agent has closed its sessions.
 func newFixtureIn(t *testing.T, dir string, open Open) *fixture {
 	t.Helper()
+	return newFixtureCaps(t, dir, open, sdk.ClientCapabilities{})
+}
+
+// newFixtureCaps is newFixtureIn with the capabilities the client offers.
+func newFixtureCaps(t *testing.T, dir string, open Open, caps sdk.ClientCapabilities) *fixture {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	agentIn, clientOut := io.Pipe()
 	clientIn, agentOut := io.Pipe()
@@ -55,7 +61,7 @@ func newFixtureIn(t *testing.T, dir string, open Open) *fixture {
 	})
 	rec := &recorder{}
 	conn := sdk.NewClientSideConnection(rec, clientOut, clientIn)
-	if _, err := conn.Initialize(ctx, sdk.InitializeRequest{ProtocolVersion: sdk.ProtocolVersionNumber}); err != nil {
+	if _, err := conn.Initialize(ctx, sdk.InitializeRequest{ProtocolVersion: sdk.ProtocolVersionNumber, ClientCapabilities: caps}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	return &fixture{conn: conn, rec: rec, dir: dir}
@@ -88,6 +94,11 @@ type recorder struct {
 	// permit answers a permission request; nil cancels it. asked counts the requests.
 	permit func(req sdk.RequestPermissionRequest) sdk.RequestPermissionResponse
 	asked  int
+	// fileText is what the client's file system returns; terminalOut is what its
+	// terminal prints; terminals counts the terminals created.
+	fileText    string
+	terminalOut string
+	terminals   int
 }
 
 func (r *recorder) SessionUpdate(_ context.Context, n sdk.SessionNotification) error {
@@ -104,7 +115,7 @@ func (r *recorder) RequestPermission(_ context.Context, req sdk.RequestPermissio
 }
 
 func (r *recorder) ReadTextFile(context.Context, sdk.ReadTextFileRequest) (sdk.ReadTextFileResponse, error) {
-	return sdk.ReadTextFileResponse{}, sdk.NewMethodNotFound("fs/read_text_file")
+	return sdk.ReadTextFileResponse{Content: r.fileText}, nil
 }
 
 func (r *recorder) WriteTextFile(context.Context, sdk.WriteTextFileRequest) (sdk.WriteTextFileResponse, error) {
@@ -112,7 +123,8 @@ func (r *recorder) WriteTextFile(context.Context, sdk.WriteTextFileRequest) (sdk
 }
 
 func (r *recorder) CreateTerminal(context.Context, sdk.CreateTerminalRequest) (sdk.CreateTerminalResponse, error) {
-	return sdk.CreateTerminalResponse{}, sdk.NewMethodNotFound("terminal/create")
+	r.terminals++
+	return sdk.CreateTerminalResponse{TerminalId: "term_1"}, nil
 }
 
 func (r *recorder) KillTerminal(context.Context, sdk.KillTerminalRequest) (sdk.KillTerminalResponse, error) {
@@ -120,7 +132,7 @@ func (r *recorder) KillTerminal(context.Context, sdk.KillTerminalRequest) (sdk.K
 }
 
 func (r *recorder) TerminalOutput(context.Context, sdk.TerminalOutputRequest) (sdk.TerminalOutputResponse, error) {
-	return sdk.TerminalOutputResponse{}, sdk.NewMethodNotFound("terminal/output")
+	return sdk.TerminalOutputResponse{Output: r.terminalOut}, nil
 }
 
 func (r *recorder) ReleaseTerminal(context.Context, sdk.ReleaseTerminalRequest) (sdk.ReleaseTerminalResponse, error) {
@@ -128,7 +140,8 @@ func (r *recorder) ReleaseTerminal(context.Context, sdk.ReleaseTerminalRequest) 
 }
 
 func (r *recorder) WaitForTerminalExit(context.Context, sdk.WaitForTerminalExitRequest) (sdk.WaitForTerminalExitResponse, error) {
-	return sdk.WaitForTerminalExitResponse{}, sdk.NewMethodNotFound("terminal/wait_for_exit")
+	zero := 0
+	return sdk.WaitForTerminalExitResponse{ExitCode: &zero}, nil
 }
 
 // seen names the kind of each update the client got, in order.
@@ -653,5 +666,34 @@ func TestAblationIsSetBeforeThePrompt(t *testing.T) {
 	f.prompt(t, id, "Look.")
 	if _, err := f.conn.CallExtension(ctx, "_nanobird/ablation", map[string]any{"sessionId": id, "mechanisms": []string{}}); err == nil {
 		t.Fatal("the ablation changed after a prompt ran")
+	}
+}
+
+func TestReadFileGoesThroughTheClientWhenItOffersIt(t *testing.T) {
+	args, _ := json.Marshal(map[string]string{"path": "notes.txt"})
+	client := fake.New(
+		fake.Reply{Calls: []fake.Call{{ID: "read_1", Name: "read_file", Arguments: string(args)}}},
+		finishWith("read it"), finishWith("read it"),
+	)
+	caps := sdk.ClientCapabilities{Fs: sdk.FileSystemCapabilities{ReadTextFile: true}}
+	f := newFixtureCaps(t, t.TempDir(), loopOpen(client), caps)
+	f.rec.fileText = "unsaved buffer text"
+	id := f.newSession(t)
+	f.prompt(t, id, "Read notes.txt.")
+	if out, _ := f.rec.lastUpdateOf("read_1").RawOutput.(string); !strings.Contains(out, "unsaved buffer text") {
+		t.Fatalf("read_file did not read through the client: %q", out)
+	}
+}
+
+func TestRunShellRunsInTheClientsTerminalWhenItOffersOne(t *testing.T) {
+	client := fake.New(shellReply("sh_1", "echo hello"), finishWith("ran it"), finishWith("ran it"))
+	caps := sdk.ClientCapabilities{Terminal: true}
+	f := newFixtureCaps(t, t.TempDir(), loopOpen(client), caps)
+	f.rec.terminalOut = "hello\n"
+	id := f.newSession(t)
+	f.prompt(t, id, "Say hello.")
+	done := f.rec.lastUpdateOf("sh_1")
+	if f.rec.terminals != 1 || len(done.Content) != 1 || done.Content[0].Terminal == nil {
+		t.Fatalf("the command did not run in a terminal: terminals = %d, content = %+v", f.rec.terminals, done.Content)
 	}
 }

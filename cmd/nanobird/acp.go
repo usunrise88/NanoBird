@@ -50,8 +50,12 @@ func acpCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, versio
 			level:      level,
 			logs:       stderr,
 			unattended: true,
-			observer:   obs,
-			warn:       stderr,
+			observer: clientIO{
+				Observer: obs,
+				fs:       cfg.ACP.ClientFS == "read",
+				terminal: cfg.ACP.ClientTerminal == "on",
+			},
+			warn: stderr,
 		})
 		if err != nil {
 			return nil, err
@@ -69,6 +73,31 @@ func acpCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, versio
 		return 1
 	}
 	return 0
+}
+
+// clientIO is the observer of a session that lets the client read files and run
+// terminals, as the configuration allows (SPEC §8.6). With either off, the tools do
+// that work themselves.
+type clientIO struct {
+	loop.Observer
+	fs       bool
+	terminal bool
+}
+
+// ReadText reads through the client when the configuration allows it.
+func (c clientIO) ReadText(ctx context.Context, abs string) (string, bool, error) {
+	if !c.fs {
+		return "", false, nil
+	}
+	return c.Observer.ReadText(ctx, abs)
+}
+
+// RunTerminal runs in the client's terminal when the configuration allows it.
+func (c clientIO) RunTerminal(ctx context.Context, command string, args []string, cwd string) (string, bool, error) {
+	if !c.terminal {
+		return "", false, nil
+	}
+	return c.Observer.RunTerminal(ctx, command, args, cwd)
 }
 
 // sessionRunner is one session of the ACP agent: its prompts run on one setup.

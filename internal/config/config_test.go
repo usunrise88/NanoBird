@@ -123,3 +123,14 @@ func TestBadEnvironmentValueIsAnError(t *testing.T) {
 		t.Fatal("a non-integer was accepted")
 	}
 }
+
+func TestACPOptInsAreOffByDefaultAndChecked(t *testing.T) {
+	cfg := Defaults()
+	if cfg.ACP.ClientFS != "off" || cfg.ACP.ClientTerminal != "off" {
+		t.Fatalf("acp opt-ins = %+v, want both off", cfg.ACP)
+	}
+	cfg.ACP.ClientFS = "write"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("acp.client_fs write was accepted")
+	}
+}

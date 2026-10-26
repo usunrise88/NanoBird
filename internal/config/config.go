@@ -28,6 +28,7 @@ type Config struct {
 	MCP        MCP        `yaml:"mcp"`
 	Skills     Skills     `yaml:"skills"`
 	Offline    bool       `yaml:"offline"`
+	ACP        ACP        `yaml:"acp"`
 }
 
 // Model names the engine and how to reach it (SPEC §7.5).
@@ -93,6 +94,7 @@ type Skills struct {
 // Defaults returns the built-in configuration (SPEC §9.1).
 func Defaults() Config {
 	return Config{
+		ACP: ACP{ClientFS: "off", ClientTerminal: "off"},
 		Model: Model{
 			Backend:  "nanollm",
 			Endpoint: "http://127.0.0.1:8080",
@@ -169,6 +171,8 @@ func (c Config) Validate() error {
 		{c.Loop.Temperature >= 0, "loop.temperature must not be negative"},
 		{oneOf(c.Loop.Thinking, "off", "plan", "on"), "loop.thinking must be off, plan or on"},
 		{oneOf(c.Loop.ToolFormat, "rescue", "strict"), "loop.tool_format must be rescue or strict"},
+		{oneOf(c.ACP.ClientFS, "off", "read"), "acp.client_fs must be off or read"},
+		{oneOf(c.ACP.ClientTerminal, "off", "on"), "acp.client_terminal must be off or on"},
 		{c.Tools.ShellTimeoutS >= 1, "tools.shell_timeout_s must be at least 1"},
 		{c.Tools.ResultCapBytes >= 1, "tools.result_cap_bytes must be at least 1"},
 		{oneOf(c.Tools.ClientFS, "off", "read"), "tools.client_fs must be off or read"},
@@ -294,4 +298,15 @@ func oneOf(v string, options ...string) bool {
 		}
 	}
 	return false
+}
+
+// ACP holds the ACP choices that let the client do work for the agent. Both are
+// opt-in, and benchmark runs keep them off (SPEC §8.6).
+type ACP struct {
+	// ClientFS is off, or read: read_file reads through the client, when the client
+	// offers a file system (SPEC §8.6).
+	ClientFS string `yaml:"client_fs"`
+	// ClientTerminal is off, or on: run_shell runs in a terminal of the client, when
+	// the client offers one (SPEC §8.6).
+	ClientTerminal string `yaml:"client_terminal"`
 }

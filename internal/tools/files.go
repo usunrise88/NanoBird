@@ -35,7 +35,7 @@ var readFileTool = Tool{
 	run: runReadFile,
 }
 
-func runReadFile(_ context.Context, env *Env, args json.RawMessage) (string, error) {
+func runReadFile(ctx context.Context, env *Env, args json.RawMessage) (string, error) {
 	var a struct {
 		Path   string `json:"path"`
 		Offset int    `json:"offset"`
@@ -48,9 +48,20 @@ func runReadFile(_ context.Context, env *Env, args json.RawMessage) (string, err
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(abs)
-	if err != nil {
-		return "", err
+	var data []byte
+	handled := false
+	if env.ReadText != nil {
+		text, ok, err := env.ReadText(ctx, abs)
+		if err != nil {
+			return "", err
+		}
+		data, handled = []byte(text), ok
+	}
+	if !handled {
+		data, err = os.ReadFile(abs)
+		if err != nil {
+			return "", err
+		}
 	}
 	if bytes.IndexByte(data, 0) >= 0 {
 		return "", fmt.Errorf("%s is binary; read_file shows text only", a.Path)
