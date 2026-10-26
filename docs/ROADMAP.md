@@ -4,7 +4,7 @@ The specification is in [SPEC.md](SPEC.md); section numbers refer to it. NanoBir
 
 | Stage | Name | Lands | Gate |
 | --- | --- | --- | --- |
-| 0 | Baseline | Stock Mingbird on NanoLLM (Ollama dialect), E4B. Fidelity runs on `gemma4:e2b` and `qwen3.5:4b`. Engine doctor. | **G0:** 3 replications of A0 and F0 recorded; doctor probes pass on NanoLLM |
+| 0 | Baseline | Stock Mingbird on NanoLLM's OpenAI dialect, E4B (A0). No Ollama, so F0 has no replacement yet (see Decisions). Engine doctor. | **G0:** 3 replications of A0 and F0 recorded; doctor probes pass on NanoLLM |
 | 1 | Core port | Loop, tools, M1–M10, safety rings, OpenAI client. Headless run, transcripts, golden tests. | **G1:** F1 within F0's replication spread; prefill budget test green in CI |
 | 2 | ACP | ACP agent: sessions, permissions, plan, modes. LRAB runner as an ACP client. | **G2:** ACP test kit passes in CI; ACP and headless runs agree within spread |
 | 3 | NanoLLM primitives | Native backend on RFC R1–R5 as NanoLLM ships them. Knob sweeps decide the defaults. | **G3:** A1 ≥ A0 on E4B, the success criterion (SPEC §1); A1 − A2 measured and published |
@@ -15,6 +15,9 @@ The specification is in [SPEC.md](SPEC.md); section numbers refer to it. NanoBir
 | Decision | What changes from the spec |
 | --- | --- |
 | macOS waits | No macOS CI job and no darwin release targets for now; the project builds and tests for Windows and Linux. Spec §11.1 still lists macOS, so this is a deliberate deviation. |
+| No Ollama | The engine is NanoLLM, reached through its OpenAI dialect. Nothing in NanoBird targets Ollama. Spec §7.3 and §10.2 (arm F0) still name Ollama and need a replacement arm before G0 can close. |
+| Agent first | The core loop, the tools and the transcripts land before any benchmark. Spec §2 rule 5 (a mechanism lands only with an LRAB delta) and the gates of §12 still decide when a mechanism's default changes. |
+| Prefill over target | Measured on 2026-10-26: 1,240 tokens for the static prefill on Gemma 4 E4B (NanoLLM tokenize), against Mingbird's target of 797 (SPEC §5.1). `prefill.BudgetBytes` is pinned at today's 4,383 bytes, so growth fails CI. Open: shorten the schemas, route tools per task (M1), or change the target. |
 
 ## Placement the spec leaves open
 

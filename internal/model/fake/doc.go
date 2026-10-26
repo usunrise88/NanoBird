@@ -1,5 +1,3 @@
-// Package fake is a scripted model for golden transcripts, so mechanism
-// behaviour is tested without a live model (SPEC §5.10).
-//
-// Lands with stage 1.
+// Package fake is a scripted model for golden transcripts and loop tests, so
+// mechanism behaviour is checked without a live engine (SPEC §5.10).
 package fake

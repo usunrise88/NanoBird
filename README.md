@@ -4,7 +4,7 @@ NanoBird is a lightweight agent harness for small local models. It ports the mec
 
 ## Status
 
-Bootstrap. The repository holds the specification, the package layout and the build and CI skeleton. No mechanism is implemented yet; each package is a stub that names the section of the specification it will implement. The stages and their gates are in [docs/ROADMAP.md](docs/ROADMAP.md).
+Stage 1 in progress. The agent loop, the built-in tools, the workspace and shell checks, transcripts and a headless `nanobird run` are in, with golden tests against a scripted model. Mechanisms M1 to M10 are not yet implemented, except retries (M7) and the write guard (N1). Config, the engine doctor, ACP and MCP are still stubs. The stages and their gates are in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Documents
 

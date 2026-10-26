@@ -1,0 +1,4 @@
+[
+  {"calls": [{"name": "create_file", "arguments": "{\"path\": \"a.txt\", \"content\": \"hello\\n\"}"}]},
+  {"calls": [{"name": "finish", "arguments": "{\"summary\": \"Created a.txt with the word hello.\"}"}]}
+]

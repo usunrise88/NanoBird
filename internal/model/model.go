@@ -54,6 +54,12 @@ type Request struct {
 	Temperature float64
 	// MaxTokens caps the reply (SPEC §6.3). Zero leaves the cap to the engine.
 	MaxTokens int
+	// Thinking asks the engine to think (true) or not (false) on this turn.
+	// Nil leaves the choice to the engine. Runs default to off (SPEC §4.5).
+	Thinking *bool
+	// ReasoningBudget caps the thinking tokens of the turn (SPEC §4.5, RFC R3).
+	// Zero sends no cap.
+	ReasoningBudget int
 }
 
 // Event is one piece of a streamed reply. Exactly one field is set.

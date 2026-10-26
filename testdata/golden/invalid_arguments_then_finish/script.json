@@ -1,0 +1,5 @@
+[
+  {"calls": [{"name": "create_file", "arguments": "{\"path\": \"b.txt\", \"content\": "}]},
+  {"calls": [{"name": "create_file", "arguments": "{\"path\": \"b.txt\", \"content\": \"ok\"}"}]},
+  {"calls": [{"name": "finish", "arguments": "{\"summary\": \"Created b.txt.\"}"}]}
+]
