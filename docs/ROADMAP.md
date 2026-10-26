@@ -39,6 +39,4 @@ The spec does not put every part of the design into a stage. These are my readin
 - **Release mechanics.** Stage 4 says "Tag v1.0" but does not specify the release workflow or the archive scripts. SPEC §11.3 says they mirror NanoLLM (`release.yml`, `scripts/dist.sh`).
 
 ## Open gaps
-
-- **Permission for MCP calls in attended sessions.** An MCP tool that needs a permission is denied in attended sessions too. SPEC §6.4 says an attended session asks the client, and that prompt is not wired for MCP calls yet. Tools of servers that the client passes are affected the same way.
 - **Live runs.** The ACP test kit has run against the scripted model only. A run against NanoLLM needs the endpoint key, which the user exports, so it is not part of CI yet.

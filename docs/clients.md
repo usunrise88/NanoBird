@@ -19,7 +19,7 @@ The agent speaks ACP v1 over stdio. Stdout carries the protocol only; logs go to
 - Session updates: the model's text and its thinking as they stream, each tool call with its kind, path and status, the output of each call and the diff of an edit, the plan from the todo list, the usage of each reply, the title from the first task, and the chat or task decision of each prompt. Setup warnings and compactions come as short messages.
 - Permissions: a shell command that a safety ring stops asks the client, which can allow it once, allow its command family for the session (ring 2 only), or reject it.
 - Config options: `thinking` (off, plan or on), `offline` (off or on), and `model` when the engine lists its models. Values apply from the next prompt.
-- MCP servers that the client passes to `session/new`, `session/load` or `session/resume` start with the session: stdio and streamable HTTP. Their tools are untrusted, so calls to them are denied until the agent asks for permission on MCP calls (ROADMAP, open gaps).
+- MCP servers that the client passes to `session/new`, `session/load` or `session/resume` start with the session: stdio and streamable HTTP. Their tools are untrusted, so each call asks the client for permission, as a shell call does (SPEC §6.4).
 - The client's file system and terminal, when the client offers them and the configuration allows: `acp.client_fs: read` and `acp.client_terminal: on`. Both are off by default.
 - Extensions: `_meta.nanobird` on a tool call update that a mechanism changed, `_nanobird/stats` for a session's counters, and `_nanobird/ablation` to set the mechanisms a session leaves off, before its first prompt.
 

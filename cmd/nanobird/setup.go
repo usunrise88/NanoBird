@@ -32,6 +32,7 @@ type runSetup struct {
 	lp       *loop.Loop
 	mgr      *mcp.Manager
 	servers  map[string]mcp.Spec // the MCP servers the client passed to the session
+	ask      mcp.Ask
 	warnings []string
 }
 
@@ -136,6 +137,10 @@ func (s *runSetup) build(ctx context.Context, ws *safety.Workspace, o setupOptio
 	if err != nil {
 		return err
 	}
+	if o.observer != nil {
+		s.ask = o.observer.Permit
+	}
+	s.mgr.SetAsk(s.ask)
 	s.warnings = s.mgr.Warnings
 	for _, w := range s.warnings {
 		fmt.Fprintf(o.warn, "nanobird: %s\n", w)
@@ -166,6 +171,7 @@ func (s *runSetup) reloadMCP(ctx context.Context, cfg config.Config, root string
 	if s.mgr != nil {
 		s.mgr.Close()
 	}
+	mgr.SetAsk(s.ask)
 	s.mgr = mgr
 	s.lp.SetTools(tools.NewRegistry(append(builtins, mgr.Tools()...)))
 	return nil
