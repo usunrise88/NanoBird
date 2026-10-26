@@ -16,6 +16,10 @@ const (
 	AntiLoop = "anti_loop"
 	// Boundary is M8: a shell command that names a credential store needs permission.
 	Boundary = "boundary"
+	// Layering is M2: a prompt is classified as chat or task before any tool is offered.
+	Layering = "layering"
+	// Prefill is M1: the category router decides which tools a task loads.
+	Prefill = "prefill"
 	// EditSafety is M6: an edit that undoes the edit before it draws a hint to re-read the file.
 	EditSafety = "edit_safety"
 	// FinishGate is M3a: a finish is checked before it is accepted.
@@ -45,6 +49,7 @@ var known = []string{
 
 var implemented = map[string]bool{
 	AntiLoop: true, Boundary: true, EditSafety: true, FinishGate: true,
+	Layering: true, Prefill: true,
 	FormatRescue: true, Resilience: true, SelfCheck: true, ToolNameFix: true,
 	VerifyFeedback: true, WriteGuard: true,
 }

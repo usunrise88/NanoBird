@@ -6,16 +6,17 @@ import (
 	"github.com/usunrise88/nanobird/internal/model"
 )
 
-// BudgetBytes caps the static prefill: the system prompt plus every tool
-// schema, in bytes, which does not depend on a tokenizer (SPEC §5.1). Until the
-// category router (M1) decides which tools a task loads, the budget covers all
-// built-in tools. Growth past it fails CI unless this constant is raised in the
-// same commit, with the reason.
+// BudgetBytes caps the static prefill: the system prompt and the schemas of the
+// core tools, in bytes, which does not depend on a tokenizer (SPEC §5.1). The
+// default request carries only the core tools; the router adds routed categories
+// per task. Growth past it fails CI unless this constant is raised in the same
+// commit, with the reason. It went from 4,383 to 4,438 when the skills and tools
+// meta tools joined the core set.
 //
-// Measured on 2026-10-26 with NanoLLM's tokenize endpoint, Gemma 4 E4B: this
-// prefill is 1,240 tokens, against Mingbird's target of 797 (SPEC §5.1). The
-// target is not met yet; docs/ROADMAP.md records the decision that is open.
-const BudgetBytes = 4383
+// Token counts are per model, not part of this pin (docs/ROADMAP.md). Measured on
+// 2026-10-26 with NanoLLM's tokenize endpoint, Gemma 4 E4B: 1,258 tokens with the
+// template and one user turn. Qwen3.5-4B, rendered through its own template: 1,575.
+const BudgetBytes = 4438
 
 // systemPrompt is English throughout (SPEC §5.13). The one verb takes the
 // shell name.
@@ -32,6 +33,11 @@ Rules:
 
 Shell: %s
 `
+
+// ChatSystem is the system prompt of a chat-mode reply (SPEC §4.1): English, at
+// most four lines, and no tools.
+const ChatSystem = `You are NanoBird, a coding assistant. Answer the message in English, briefly and plainly.
+You have no tools for this message. If the user asks for a change in the workspace, say that a task is needed.`
 
 // System returns the system prompt with the shell named.
 func System(shell string) string {

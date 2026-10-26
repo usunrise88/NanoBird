@@ -87,6 +87,7 @@ type Loop struct {
 
 // New prepares a loop. The mechanism switches come from env.
 func New(client model.Client, reg *tools.Registry, env *tools.Env, log *session.Log, cfg Config) *Loop {
+	env.Catalog = reg
 	return &Loop{client: client, tools: reg, env: env, log: log, cfg: cfg}
 }
 
@@ -117,11 +118,17 @@ func (l *Loop) Run(ctx context.Context, task string) Result {
 		conv: mech.NewConvergence(),
 	}
 	l.write("task", taskRecord{Text: task})
+	l.route(task)
+	if l.on(mech.Layering) && Classify(task) == ModeChat {
+		l.write("classify", classifyRecord{Mode: string(ModeChat)})
+		return l.chat(ctx, task)
+	}
+	l.write("classify", classifyRecord{Mode: string(ModeTask)})
 	for turn := 1; turn <= l.cfg.MaxTurns; turn++ {
 		if ctx.Err() != nil {
 			return l.stop(Result{Stop: StopCancelled, Turns: turn - 1, Err: ctx.Err()})
 		}
-		r, err := l.generate(ctx, turn, st.msgs)
+		r, err := l.generate(ctx, turn, st.msgs, l.tools.Offered(l.env.Enabled))
 		if err != nil {
 			if ctx.Err() != nil {
 				return l.stop(Result{Stop: StopCancelled, Turns: turn, Err: err})
@@ -175,13 +182,13 @@ func (l *Loop) Run(ctx context.Context, task string) Result {
 // reply is one model turn as the loop reads it.
 type reply = model.Reply
 
-// generate asks the model for one reply. With the resilience mechanism on (M7),
-// a failed call is retried with doubling backoff.
-func (l *Loop) generate(ctx context.Context, turn int, msgs []model.Message) (reply, error) {
+// generate asks the model for one reply, offering the given tools. With the
+// resilience mechanism on (M7), a failed call is retried with doubling backoff.
+func (l *Loop) generate(ctx context.Context, turn int, msgs []model.Message, offered []model.Tool) (reply, error) {
 	thinking := l.cfg.Thinking
 	req := model.Request{
 		Messages:    msgs,
-		Tools:       l.tools.Schemas(),
+		Tools:       offered,
 		Temperature: l.cfg.Temperature,
 		MaxTokens:   l.cfg.OutputCapTokens,
 		Thinking:    &thinking,

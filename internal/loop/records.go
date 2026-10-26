@@ -11,6 +11,16 @@ type taskRecord struct {
 	Text string `json:"text"`
 }
 
+// classifyRecord is the mode a prompt was classified as (M2, SPEC §4.1).
+type classifyRecord struct {
+	Mode string `json:"mode"`
+}
+
+// routeRecord names the categories the router loaded for a task (M1).
+type routeRecord struct {
+	Categories []string `json:"categories"`
+}
+
 type callRecord struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`

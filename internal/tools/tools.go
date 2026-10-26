@@ -10,6 +10,7 @@ import (
 	"github.com/usunrise88/nanobird/internal/mech"
 	"github.com/usunrise88/nanobird/internal/model"
 	"github.com/usunrise88/nanobird/internal/safety"
+	"github.com/usunrise88/nanobird/internal/skills"
 )
 
 // Env is what the tools act on: the workspace, the shell, the clock and the
@@ -27,16 +28,25 @@ type Env struct {
 	Clock      func() time.Time
 	// Plan is the todo list the finish gate reads (SPEC §5.3).
 	Plan Plan
+	// Enabled names the categories and tools that go beyond the core set for
+	// this run. The router fills it, and the tools tool adds to it (M1).
+	Enabled map[string]bool
+	// Skills are the skills the skills tool lists and loads (M9).
+	Skills []skills.Skill
+	// Catalog is the registry the tools tool searches. The loop sets it.
+	Catalog *Registry
 }
 
-// Tool is one built-in tool: its name and schema as the model sees them, and
-// the call that runs it.
+// Tool is one built-in tool: its name, category and schema as the model sees
+// them, and the call that runs it.
 type Tool struct {
 	Name        string
 	Description string
 	// Parameters is the JSON Schema of the arguments.
 	Parameters json.RawMessage
-	run        func(ctx context.Context, env *Env, args json.RawMessage) (string, error)
+	// Category is the M1 category the tool belongs to (SPEC §5.1).
+	Category string
+	run      func(ctx context.Context, env *Env, args json.RawMessage) (string, error)
 }
 
 // Run executes one call with the arguments the model wrote, as JSON. The
@@ -46,13 +56,28 @@ func (t Tool) Run(ctx context.Context, env *Env, args json.RawMessage) (string, 
 	return t.run(ctx, env, args)
 }
 
-// Builtins returns the built-in tools in the order the model sees them.
+// categories maps each built-in tool to its M1 category (SPEC §5.1).
+var categories = map[string]string{
+	"read_file": "core", "list_dir": "core", "create_file": "core", "edit_file": "core",
+	"run_shell": "core", "todo": "core", "skills": "core", "tools": "core", "finish": "core",
+	"append_file": "files", "delete_file": "files", "rollback": "files",
+	"search_files": "code", "run_tests": "code",
+	"memory_store": "memory", "memory_recall": "memory",
+}
+
+// Builtins returns the built-in tools in the order the model sees them, with
+// their categories.
 func Builtins() []Tool {
-	return []Tool{
+	list := []Tool{
 		readFileTool, listDirTool, createFileTool, editFileTool,
 		appendFileTool, deleteFileTool, rollbackTool, runShellTool,
-		todoTool, finishTool,
+		todoTool, finishTool, skillsTool, toolsTool,
+		searchFilesTool, runTestsTool, memoryStoreTool, memoryRecallTool,
 	}
+	for i := range list {
+		list[i].Category = categories[list[i].Name]
+	}
+	return list
 }
 
 // Registry holds the tools a run may offer.
@@ -89,13 +114,41 @@ func (r *Registry) Names() []string {
 	return names
 }
 
-// Schemas returns the tools the model is offered, in registry order.
+// Schemas returns every tool in registry order.
 func (r *Registry) Schemas() []model.Tool {
 	out := make([]model.Tool, 0, len(r.tools))
 	for _, t := range r.tools {
 		out = append(out, model.Tool{Name: t.Name, Description: t.Description, Parameters: t.Parameters})
 	}
 	return out
+}
+
+// Offered returns the tools a request carries: the core tools, and the tools of
+// each enabled category or each tool enabled by name (SPEC §5.1).
+func (r *Registry) Offered(enabled map[string]bool) []model.Tool {
+	var out []model.Tool
+	for _, t := range r.tools {
+		if t.Category == "core" || enabled[t.Category] || enabled[t.Name] {
+			out = append(out, model.Tool{Name: t.Name, Description: t.Description, Parameters: t.Parameters})
+		}
+	}
+	return out
+}
+
+// all returns every tool in registry order.
+func (r *Registry) all() []Tool {
+	return r.tools
+}
+
+// inCategory lists the names of the tools in one category.
+func (r *Registry) inCategory(category string) []string {
+	var names []string
+	for _, t := range r.tools {
+		if t.Category == category {
+			names = append(names, t.Name)
+		}
+	}
+	return names
 }
 
 // Cap shortens a result to limit bytes for the model: the first three quarters

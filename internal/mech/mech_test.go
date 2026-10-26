@@ -17,7 +17,7 @@ func TestParseSwitchesOff(t *testing.T) {
 }
 
 func TestParseRefusesUnknownAndUnbuiltIds(t *testing.T) {
-	for _, list := range []string{"bogus", "layering", "compaction", "resilience,plan_reinject"} {
+	for _, list := range []string{"bogus", "think_budget", "compaction", "resilience,plan_reinject"} {
 		if _, err := Parse(list); err == nil {
 			t.Errorf("Parse(%q) was accepted", list)
 		}
