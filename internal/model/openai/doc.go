@@ -1,5 +1,4 @@
-// Package openai is the OpenAI-compatible backend for /v1/chat/completions:
-// NanoLLM's OpenAI dialect, llama-server, vLLM and Ollama (SPEC §7.3).
-//
-// Lands with stage 1.
+// Package openai is the backend for OpenAI-compatible chat endpoints, NanoLLM's
+// OpenAI dialect first (SPEC §7.3). It streams replies, collects tool calls and
+// ends a turn that stays silent for the stall timeout (SPEC §7.5).
 package openai
