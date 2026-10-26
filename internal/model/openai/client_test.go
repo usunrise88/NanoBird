@@ -365,3 +365,62 @@ func TestNewValidatesConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestThinkingControlIsSent(t *testing.T) {
+	var got map[string]any
+	endpoint := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		sse(w, `{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`, `[DONE]`)
+	})
+	off := false
+	s, err := newTestClient(t, endpoint, time.Minute).Complete(context.Background(), model.Request{
+		Messages:        []model.Message{{Role: model.RoleUser, Content: "hi"}},
+		Thinking:        &off,
+		ReasoningBudget: 256,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	events(t, s)
+	if got["enable_thinking"] != false || got["max_reasoning_tokens"] != float64(256) {
+		t.Fatalf("thinking fields = %v / %v, want false / 256", got["enable_thinking"], got["max_reasoning_tokens"])
+	}
+}
+
+func TestThinkingFieldsAreOmittedWhenUnset(t *testing.T) {
+	var got map[string]any
+	endpoint := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		sse(w, `{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`, `[DONE]`)
+	})
+	s, err := newTestClient(t, endpoint, time.Minute).Complete(context.Background(), model.Request{
+		Messages: []model.Message{{Role: model.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	events(t, s)
+	for _, k := range []string{"enable_thinking", "max_reasoning_tokens"} {
+		if _, ok := got[k]; ok {
+			t.Errorf("%s was sent although the request left it unset", k)
+		}
+	}
+}
+
+func TestProblemDetailsErrorIsReadable(t *testing.T) {
+	endpoint := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"type":"about:blank","title":"Unauthorized","status":401,"detail":"a valid API key is required","code":"unauthorized"}`)
+	})
+	_, err := newTestClient(t, endpoint, time.Minute).Complete(context.Background(), model.Request{
+		Messages: []model.Message{{Role: model.RoleUser, Content: "hi"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "a valid API key is required") {
+		t.Fatalf("error = %v, want the problem detail", err)
+	}
+}

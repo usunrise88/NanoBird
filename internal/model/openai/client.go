@@ -131,13 +131,15 @@ func (c *Client) Release(context.Context, model.PrefixHandle) error {
 
 // chatRequest is the body of POST /v1/chat/completions.
 type chatRequest struct {
-	Model         string        `json:"model"`
-	Messages      []chatMessage `json:"messages"`
-	Tools         []chatTool    `json:"tools,omitempty"`
-	Stream        bool          `json:"stream"`
-	StreamOptions streamOptions `json:"stream_options"`
-	Temperature   float64       `json:"temperature"`
-	MaxTokens     int           `json:"max_tokens,omitempty"`
+	Model              string        `json:"model"`
+	Messages           []chatMessage `json:"messages"`
+	Tools              []chatTool    `json:"tools,omitempty"`
+	Stream             bool          `json:"stream"`
+	StreamOptions      streamOptions `json:"stream_options"`
+	Temperature        float64       `json:"temperature"`
+	MaxTokens          int           `json:"max_tokens,omitempty"`
+	EnableThinking     *bool         `json:"enable_thinking,omitempty"`
+	MaxReasoningTokens int           `json:"max_reasoning_tokens,omitempty"`
 }
 
 type streamOptions struct {
@@ -180,6 +182,10 @@ func (c *Client) buildRequest(req model.Request) chatRequest {
 		StreamOptions: streamOptions{IncludeUsage: true},
 		Temperature:   req.Temperature,
 		MaxTokens:     req.MaxTokens,
+		// NanoLLM's OpenAI dialect takes enable_thinking and
+		// max_reasoning_tokens as extensions (see its package comment).
+		EnableThinking:     req.Thinking,
+		MaxReasoningTokens: req.ReasoningBudget,
 	}
 	for _, m := range req.Messages {
 		out.Messages = append(out.Messages, toChatMessage(m))
@@ -213,15 +219,22 @@ func toChatMessage(m model.Message) chatMessage {
 }
 
 // errorMessage reads the message of a failed reply: the OpenAI error envelope
-// when there is one, the raw body otherwise.
+// when there is one, the problem details (RFC 9457) that NanoLLM's auth layer
+// sends otherwise, and the raw body last.
 func errorMessage(resp *http.Response) string {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 	var env struct {
-		Error *apiError `json:"error"`
+		Error  *apiError `json:"error"`
+		Detail string    `json:"detail"`
 	}
-	if json.Unmarshal(raw, &env) == nil && env.Error != nil && env.Error.Message != "" {
-		return env.Error.Message
+	if json.Unmarshal(raw, &env) == nil {
+		switch {
+		case env.Error != nil && env.Error.Message != "":
+			return env.Error.Message
+		case env.Detail != "":
+			return env.Detail
+		}
 	}
 	return strings.TrimSpace(string(raw))
 }
