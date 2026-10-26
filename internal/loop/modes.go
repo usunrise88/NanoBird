@@ -92,9 +92,7 @@ var workspaceWords = map[string]bool{"project": true, "workspace": true, "repo":
 // greeting, or a question that names no work and no file, is chat. Anything else
 // is task, because on doubt task wins and a real task must not lose its tools.
 func Classify(task string) Mode {
-	words := strings.FieldsFunc(strings.ToLower(task), func(r rune) bool {
-		return r < 'a' || r > 'z'
-	})
+	words := promptWords(task)
 	if len(words) == 0 {
 		return ModeTask
 	}
@@ -121,15 +119,59 @@ func Classify(task string) Mode {
 }
 
 // decide is the mode of a prompt. A mode that the client set holds. In auto, the
-// classifier decides (SPEC §4.1).
+// classifier decides, and a follow-up to earlier work is a task (SPEC §4.1).
 func (l *Loop) decide(task string) Mode {
 	if l.mode == ModeChat || l.mode == ModeTask {
 		return l.mode
 	}
-	if l.on(mech.Layering) && Classify(task) == ModeChat {
+	if l.on(mech.Layering) && Classify(task) == ModeChat && !continues(l.history, task) {
 		return ModeChat
 	}
 	return ModeTask
+}
+
+// followUpWords is the longest prompt that can be a follow-up (SPEC §4.1).
+const followUpWords = 12
+
+// continues reports whether a prompt is a short follow-up to a session that has
+// already changed files. Such a prompt is a task, so that real work keeps its tools.
+// A greeting is never a follow-up.
+func continues(history []model.Message, task string) bool {
+	return wroteFiles(history) && len(promptWords(task)) <= followUpWords && !greeting(task)
+}
+
+// wroteFiles reports whether the conversation holds a call to a tool that changes
+// files, which makes it a session that has produced artifacts.
+func wroteFiles(msgs []model.Message) bool {
+	for _, m := range msgs {
+		for _, c := range m.ToolCalls {
+			if writes[c.Name] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// promptWords are the lowercase words of a prompt, without punctuation.
+func promptWords(task string) []string {
+	return strings.FieldsFunc(strings.ToLower(task), func(r rune) bool {
+		return r < 'a' || r > 'z'
+	})
+}
+
+// greeting reports whether a prompt is nothing but greetings and thanks.
+func greeting(task string) bool {
+	words := promptWords(task)
+	if len(words) == 0 {
+		return false
+	}
+	for _, w := range words {
+		if !greetings[w] {
+			return false
+		}
+	}
+	return true
 }
 
 // SetMode sets the mode of the prompts that follow (SPEC §8.4). Auto leaves the
