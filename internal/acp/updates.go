@@ -8,6 +8,7 @@ import (
 
 	sdk "github.com/coder/acp-go-sdk"
 	"github.com/usunrise88/nanobird/internal/model"
+	"github.com/usunrise88/nanobird/internal/session"
 	"github.com/usunrise88/nanobird/internal/tools"
 )
 
@@ -141,4 +142,95 @@ func kindOf(name string) sdk.ToolKind {
 		return k
 	}
 	return sdk.ToolKindOther
+}
+
+// replay sends the history of a session, from its transcript: the prompts and the
+// replies, the calls with their results, and the end of each prompt, in the order
+// that they happened (SPEC §8.2).
+func (u *updates) replay(entries []session.Entry) {
+	calls := map[string]model.ToolCall{}
+	var said strings.Builder
+	for _, e := range entries {
+		switch e.Kind {
+		case "task":
+			var d struct {
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(e.Data, &d) == nil {
+				u.send(sdk.UpdateUserMessageText(d.Text))
+			}
+			said.Reset()
+		case "reply":
+			var d struct {
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(e.Data, &d) == nil && d.Text != "" {
+				said.WriteString(d.Text)
+				u.send(sdk.UpdateAgentMessageText(d.Text))
+			}
+		case "tool_call":
+			var d struct {
+				ID        string `json:"id"`
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}
+			if json.Unmarshal(e.Data, &d) == nil {
+				call := model.ToolCall{ID: d.ID, Name: d.Name, Arguments: d.Arguments}
+				calls[d.ID] = call
+				u.ToolCall(call)
+			}
+		case "tool_result":
+			var d struct {
+				ID     string `json:"id"`
+				OK     bool   `json:"ok"`
+				Output string `json:"output"`
+			}
+			if json.Unmarshal(e.Data, &d) == nil {
+				if call, ok := calls[d.ID]; ok {
+					u.ToolDone(call, d.OK, d.Output)
+				}
+			}
+		case "stop":
+			var d struct {
+				Summary    string `json:"summary"`
+				Unverified bool   `json:"unverified"`
+				Blocker    string `json:"blocker"`
+			}
+			if json.Unmarshal(e.Data, &d) == nil {
+				u.ending(d.Summary, d.Blocker, d.Unverified, said.String())
+			}
+		}
+	}
+}
+
+// ending says how a prompt ended, in words the client shows: the summary, when the
+// text said so far does not already hold it, a blocker, and an unverified finish
+// (SPEC §4.3, §8.3).
+func (u *updates) ending(summary, blocker string, unverified bool, said string) {
+	if summary != "" && !strings.Contains(said, summary) {
+		u.send(sdk.UpdateAgentMessageText(summary))
+	}
+	if blocker != "" {
+		u.send(sdk.UpdateAgentMessageText("Blocked: " + blocker))
+	}
+	if unverified {
+		u.send(sdk.UpdateAgentMessageText("The finish was accepted after repeated rejections, so it is unverified."))
+	}
+}
+
+// titleOf is the title of a session: its first task, or nothing when it has none.
+func titleOf(entries []session.Entry) *string {
+	for _, e := range entries {
+		if e.Kind != "task" {
+			continue
+		}
+		var d struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(e.Data, &d) == nil && d.Text != "" {
+			return &d.Text
+		}
+		return nil
+	}
+	return nil
 }
