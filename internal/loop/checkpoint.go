@@ -24,22 +24,23 @@ const checkpointVersion = 1
 // after the checkpoint stay in the transcript, and the resumed run repeats the
 // work they describe; the write guard and the edit checks catch a repeated write.
 type checkpoint struct {
-	Version       int              `json:"version"`
-	Task          string           `json:"task"`
-	Turn          int              `json:"turn"`
-	Seq           int              `json:"seq"`
-	Messages      []savedMessage   `json:"messages"`
-	Plan          []tools.PlanItem `json:"plan"`
-	Enabled       map[string]bool  `json:"enabled"`
-	Productive    int              `json:"productive"`
-	LastShell     string           `json:"last_shell"`
-	LastPrompt    int              `json:"last_prompt"`
-	SentLen       int              `json:"sent_len"`
-	LastRejection string           `json:"last_rejection"`
-	Ladder        mech.LadderState `json:"ladder"`
-	Anti          mech.LoopState   `json:"anti"`
-	Gate          mech.GateState   `json:"gate"`
-	Convergence   mech.ConvState   `json:"convergence"`
+	Version       int                 `json:"version"`
+	Task          string              `json:"task"`
+	Turn          int                 `json:"turn"`
+	Seq           int                 `json:"seq"`
+	Messages      []savedMessage      `json:"messages"`
+	Plan          []tools.PlanItem    `json:"plan"`
+	Enabled       map[string]bool     `json:"enabled"`
+	Productive    int                 `json:"productive"`
+	LastShell     string              `json:"last_shell"`
+	LastPrompt    int                 `json:"last_prompt"`
+	SentLen       int                 `json:"sent_len"`
+	LastRejection string              `json:"last_rejection"`
+	Ladder        mech.LadderState    `json:"ladder"`
+	Anti          mech.LoopState      `json:"anti"`
+	Gate          mech.GateState      `json:"gate"`
+	Convergence   mech.ConvState      `json:"convergence"`
+	Malformed     mech.MalformedState `json:"malformed"`
 }
 
 // savedMessage is a message of the history, with the names the file uses.
@@ -79,6 +80,7 @@ func (l *Loop) checkpoint(st *state, turn int) {
 		Anti:          st.anti.State(),
 		Gate:          st.gate.State(),
 		Convergence:   st.conv.State(),
+		Malformed:     st.malformed.State(),
 	}
 	data, err := json.MarshalIndent(cp, "", "  ")
 	if err == nil {
@@ -103,6 +105,7 @@ func (l *Loop) Resume(ctx context.Context) Result {
 		ladder:        mech.RestoreLadder(cp.Ladder),
 		gate:          mech.RestoreGate(cp.Gate),
 		conv:          mech.RestoreConvergence(cp.Convergence),
+		malformed:     mech.RestoreMalformed(cp.Malformed),
 		productive:    cp.Productive,
 		lastShell:     cp.LastShell,
 		lastRejection: cp.LastRejection,

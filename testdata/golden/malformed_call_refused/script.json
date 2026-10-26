@@ -1,0 +1,29 @@
+[
+  {
+    "text": "I will read it: read_file(path=notes.txt)"
+  },
+  {
+    "calls": [
+      {
+        "name": "list_dir",
+        "arguments": "{}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"Listed the workspace.\"}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"Listed the workspace.\"}"
+      }
+    ]
+  }
+]

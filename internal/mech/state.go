@@ -90,3 +90,26 @@ func RestoreConvergence(s ConvState) *Convergence {
 	}
 	return c
 }
+
+// MalformedState is the saved state of a Malformed count.
+type MalformedState struct {
+	Counts map[string]int `json:"counts"`
+}
+
+// State copies the counts.
+func (m *Malformed) State() MalformedState {
+	counts := make(map[string]int, len(m.counts))
+	for k, v := range m.counts {
+		counts[k] = v
+	}
+	return MalformedState{Counts: counts}
+}
+
+// RestoreMalformed rebuilds a count from its saved counts.
+func RestoreMalformed(s MalformedState) *Malformed {
+	m := NewMalformed()
+	for k, v := range s.Counts {
+		m.counts[k] = v
+	}
+	return m
+}
