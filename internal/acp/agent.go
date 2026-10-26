@@ -31,6 +31,9 @@ type Runner interface {
 	SetMode(mode string)
 	// SetAblation sets the mechanisms that the session leaves off (SPEC §8.8).
 	SetAblation(mechanisms []string) error
+	// Notices are the things the client should hear about the session before its
+	// first prompt, such as an MCP server that did not start (SPEC §8.3).
+	Notices() []string
 	// Thinking is the thinking policy of the next prompts: off, plan or on.
 	Thinking() string
 	// SetThinking sets the thinking policy of the next prompts (SPEC §4.5, §8.4).
@@ -83,6 +86,8 @@ type activeSession struct {
 	titled bool
 	// prompted is set once a prompt has run, after which the ablation is fixed.
 	prompted bool
+	// notices are sent as messages before the first prompt runs.
+	notices []string
 }
 
 // thinkingValues are the values of the thinking option (SPEC §4.5, §8.4).
@@ -218,6 +223,9 @@ func (a *Agent) Prompt(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResp
 		return sdk.PromptResponse{}, sdk.NewInvalidRequest("the session cannot take a prompt now: one is running, or it is closing")
 	}
 	defer s.end()
+	for _, n := range s.takeNotices() {
+		s.obs.send(sdk.UpdateAgentMessageText(n))
+	}
 	s.runner.SetMode(s.currentMode())
 	s.runner.SetThinking(s.currentThinking())
 	if s.claimTitle() {
@@ -319,7 +327,7 @@ func (a *Agent) start(cwd, id string) (*activeSession, error) {
 	if err != nil {
 		return nil, sdk.NewInternalError(err.Error())
 	}
-	s := &activeSession{id: sdk.SessionId(runner.ID()), runner: runner, obs: obs, mode: "auto", thinking: runner.Thinking(), titled: id != ""}
+	s := &activeSession{id: sdk.SessionId(runner.ID()), runner: runner, obs: obs, mode: "auto", thinking: runner.Thinking(), titled: id != "", notices: runner.Notices()}
 	obs.id = s.id
 	a.mu.Lock()
 	a.sessions[s.id] = s
@@ -436,6 +444,15 @@ func (s *activeSession) setThinking(mode string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.thinking = mode
+}
+
+// takeNotices returns the notices that are still to be sent, and forgets them.
+func (s *activeSession) takeNotices() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.notices
+	s.notices = nil
+	return n
 }
 
 // claimTitle reports whether the session still needs its title, and marks it as

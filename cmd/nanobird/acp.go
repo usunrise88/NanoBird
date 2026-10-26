@@ -127,6 +127,10 @@ func (r *sessionRunner) SetAblation(mechanisms []string) error {
 	return nil
 }
 
+// Notices are the warnings of the session's setup, such as an MCP server that did
+// not start.
+func (r *sessionRunner) Notices() []string { return r.setup.warnings }
+
 // Thinking is the thinking policy of the session's next prompts.
 func (r *sessionRunner) Thinking() string { return r.setup.lp.Thinking() }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	sdk "github.com/coder/acp-go-sdk"
+	"github.com/usunrise88/nanobird/internal/mech"
 	"github.com/usunrise88/nanobird/internal/model"
 	"github.com/usunrise88/nanobird/internal/session"
 	"github.com/usunrise88/nanobird/internal/tools"
@@ -41,6 +42,11 @@ type updates struct {
 // is kept.
 func (u *updates) Mechanism(id string, rung int) {
 	u.firings.Add(1)
+	if id == mech.Compaction {
+		// A compaction is said in words: the fallback of SPEC §8.3, since the protocol
+		// has no compaction update in this SDK.
+		u.send(sdk.UpdateAgentMessageText(fmt.Sprintf("Compacted the context (level %d).", rung)))
+	}
 	if u.meta == nil {
 		u.meta = map[string]any{"nanobird": map[string]any{"mechanism": id, "rung": rung}}
 	}

@@ -222,6 +222,8 @@ func (r *loopRunner) Thinking() string { return r.lp.Thinking() }
 
 func (r *loopRunner) SetThinking(mode string) { r.lp.SetThinking(mode) }
 
+func (r *loopRunner) Notices() []string { return nil }
+
 func (r *loopRunner) SetAblation(mechanisms []string) error {
 	sw, err := mech.Parse(strings.Join(mechanisms, ","))
 	if err != nil {
@@ -235,7 +237,8 @@ func (r *loopRunner) Close() { _ = r.log.Close() }
 
 // stubRunner is a Runner whose prompt is the function it was given.
 type stubRunner struct {
-	run func(ctx context.Context, task string) loop.Result
+	run     func(ctx context.Context, task string) loop.Result
+	notices []string
 }
 
 func (s stubRunner) ID() string { return "stub-1" }
@@ -249,6 +252,8 @@ func (s stubRunner) Thinking() string { return "off" }
 func (s stubRunner) SetThinking(string) {}
 
 func (s stubRunner) SetAblation([]string) error { return nil }
+
+func (s stubRunner) Notices() []string { return s.notices }
 
 func (s stubRunner) Close() {}
 
@@ -695,5 +700,20 @@ func TestRunShellRunsInTheClientsTerminalWhenItOffersOne(t *testing.T) {
 	done := f.rec.lastUpdateOf("sh_1")
 	if f.rec.terminals != 1 || len(done.Content) != 1 || done.Content[0].Terminal == nil {
 		t.Fatalf("the command did not run in a terminal: terminals = %d, content = %+v", f.rec.terminals, done.Content)
+	}
+}
+
+func TestNoticesAreSaidBeforeThePrompt(t *testing.T) {
+	open := func(string, string, loop.Observer) (Runner, error) {
+		return stubRunner{
+			notices: []string{"mcp server web did not start"},
+			run:     func(context.Context, string) loop.Result { return loop.Result{Stop: loop.StopEndTurn} },
+		}, nil
+	}
+	f := newFixture(t, open)
+	id := f.newSession(t)
+	f.prompt(t, id, "Go.")
+	if got, want := f.rec.seen(), []string{"text"}; !equal(got, want) || f.rec.updates[0].AgentMessageChunk == nil {
+		t.Fatalf("updates = %v, want the notice as a message", got)
 	}
 }
