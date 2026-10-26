@@ -1,6 +1,5 @@
-// Package mech holds the mechanisms, one file per id: M1 to M10 and N1 to N4
-// (SPEC §5). Each registers at its hook points and carries an ablation id, so
-// any of them can be switched off without a code change (SPEC §2, rule 3).
-//
-// Lands with stage 1.
+// Package mech holds the mechanism ids and their ablation switches (SPEC §2,
+// rule 3). A mechanism runs unless NANOBIRD_ABLATION or the config's
+// mechanisms.disable names it. Ids the code does not implement yet are refused,
+// so a leave-one-out run never silently measures nothing.
 package mech
