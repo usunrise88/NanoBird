@@ -10,11 +10,13 @@ import (
 )
 
 func TestFirstBackupAddsTheFolderToAnExistingGitignoreOnce(t *testing.T) {
-	root := t.TempDir()
-	ws, err := NewWorkspace(root)
+	ws, err := NewWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The workspace resolves its root, which on Windows can differ from the temp
+	// path (RUNNER~1 is a short name), so the files are named from the root.
+	root := ws.Root()
 	ignore := filepath.Join(root, ".gitignore")
 	if err := os.WriteFile(ignore, []byte("build/"), 0o644); err != nil {
 		t.Fatal(err)
@@ -39,11 +41,13 @@ func TestFirstBackupAddsTheFolderToAnExistingGitignoreOnce(t *testing.T) {
 }
 
 func TestBackupCreatesNoGitignoreWhenThereIsNone(t *testing.T) {
-	root := t.TempDir()
-	ws, err := NewWorkspace(root)
+	ws, err := NewWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The workspace resolves its root, which on Windows can differ from the temp
+	// path (RUNNER~1 is a short name), so the files are named from the root.
+	root := ws.Root()
 	file := filepath.Join(root, "a.txt")
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
