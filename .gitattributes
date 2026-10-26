@@ -1,0 +1,6 @@
+# Line endings are normalised to LF in the repository and on checkout, so an
+# editor on Windows that rewrites endings produces no diff.
+* text=auto eol=lf
+
+*.sh      text eol=lf
+Makefile  text eol=lf
