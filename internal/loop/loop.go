@@ -139,6 +139,7 @@ type state struct {
 // Run executes one prompt. It returns when a finish is accepted, when a stop
 // condition of SPEC §4.3 is met, or when ctx is cancelled.
 func (l *Loop) Run(ctx context.Context, task string) Result {
+	l.env.ResetCrawl()
 	st := &state{
 		task:      task,
 		msgs:      l.conversation(task),
