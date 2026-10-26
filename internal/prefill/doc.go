@@ -1,5 +1,3 @@
-// Package prefill builds the static prompt: the category router (M1), the
-// English prompt text and the prefill budget that CI pins (SPEC §5.1, §5.13).
-//
-// Lands with stage 1.
+// Package prefill holds the English prompt text and the budget of the static
+// prefill that CI pins (SPEC §5.1, §5.13). The category router (M1) comes later.
 package prefill

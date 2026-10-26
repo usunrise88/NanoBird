@@ -1,0 +1,1 @@
+In notes.txt, change beta to delta.
