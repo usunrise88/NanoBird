@@ -1,0 +1,37 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - errorlint
+    - misspell
+    - nilerr
+    - noctx        # outbound calls carry a context, so a cancelled prompt stops them
+    - unconvert
+    - wastedassign
+
+  settings:
+    errcheck:
+      # Close() on a read-only handle in a defer is noise, not a finding.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        # Terminal output: a failed write to stdout or stderr has nowhere
+        # better to be reported.
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [errcheck, bodyclose, noctx]
+
+formatters:
+  enable:
+    - gofmt

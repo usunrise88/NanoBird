@@ -1,0 +1,15 @@
+# Build output
+/dist/
+/nanobird
+/nanobird.exe
+
+# Local state: the harness writes .nanobird/ into every workspace it runs in,
+# this repository included when it is run on itself.
+/.nanobird/
+
+# Tooling
+*.test
+*.out
+.DS_Store
+.claude/settings.local.json
+.claude/worktrees/

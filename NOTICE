@@ -1,0 +1,18 @@
+NOTICE
+
+NanoBird is a port of designs, not a copy of a codebase. The sources below are
+credited here. Any code or prompt text translated from them keeps the copyright
+notice and NOTICE content of its source, with changes marked, as Apache-2.0
+section 4 requires (SPEC §11.4).
+
+  Mingbird                    Apache-2.0
+    https://github.com/Mingbird/Mingbird-agent
+    Source of the mechanism set M1–M10, the safety rings and the failure
+    taxonomy (SPEC §2, §5). No text is translated into this repository yet.
+    When the first translation lands, Mingbird's copyright notice and NOTICE
+    content are copied here.
+
+  LRAB benchmark             scorer Apache-2.0, task data CC BY 4.0
+    https://github.com/Mingbird/Mingbird-agent
+    Artifact scorer and task data for tools/lrab (SPEC §10.1). Every published
+    benchmark report credits them.
