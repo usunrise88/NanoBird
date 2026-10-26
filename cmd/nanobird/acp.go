@@ -82,5 +82,8 @@ func (r *sessionRunner) Prompt(ctx context.Context, task string) loop.Result {
 	return r.setup.lp.Run(ctx, task)
 }
 
+// SetMode sets the mode of the session's next prompts.
+func (r *sessionRunner) SetMode(mode string) { r.setup.lp.SetMode(loop.Mode(mode)) }
+
 // Close releases the session.
 func (r *sessionRunner) Close() { r.setup.Close() }

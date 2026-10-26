@@ -19,9 +19,12 @@ const (
 )
 
 // Decision is the verdict on one command and the reason a message can show.
+// AllowAlways is set for a ring 2 ask, which the client may allow for the rest of
+// the session (SPEC §5.11, §8.5).
 type Decision struct {
-	Level  Level
-	Reason string
+	Level       Level
+	Reason      string
+	AllowAlways bool
 }
 
 // ring1 lists the irreversible commands, refused in every mode.
@@ -62,7 +65,7 @@ func AssessShell(command string) Decision {
 	}
 	for _, r := range ring2 {
 		if r.re.MatchString(command) {
-			return Decision{Level: Ask, Reason: r.reason}
+			return Decision{Level: Ask, Reason: r.reason, AllowAlways: true}
 		}
 	}
 	if recursiveDelete.MatchString(command) && namesOutside(command) {

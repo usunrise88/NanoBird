@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,6 +83,9 @@ func (f *fixture) prompt(t *testing.T, id sdk.SessionId, text string) sdk.StopRe
 // refuses the client methods that the agent does not ask for.
 type recorder struct {
 	updates []sdk.SessionUpdate
+	// permit answers a permission request; nil cancels it. asked counts the requests.
+	permit func(req sdk.RequestPermissionRequest) sdk.RequestPermissionResponse
+	asked  int
 }
 
 func (r *recorder) SessionUpdate(_ context.Context, n sdk.SessionNotification) error {
@@ -89,7 +93,11 @@ func (r *recorder) SessionUpdate(_ context.Context, n sdk.SessionNotification) e
 	return nil
 }
 
-func (r *recorder) RequestPermission(context.Context, sdk.RequestPermissionRequest) (sdk.RequestPermissionResponse, error) {
+func (r *recorder) RequestPermission(_ context.Context, req sdk.RequestPermissionRequest) (sdk.RequestPermissionResponse, error) {
+	r.asked++
+	if r.permit != nil {
+		return r.permit(req), nil
+	}
 	return sdk.RequestPermissionResponse{Outcome: sdk.NewRequestPermissionOutcomeCancelled()}, nil
 }
 
@@ -136,6 +144,8 @@ func (r *recorder) seen() []string {
 			out = append(out, "tool_update")
 		case u.Plan != nil:
 			out = append(out, "plan")
+		case u.CurrentModeUpdate != nil:
+			out = append(out, "mode")
 		default:
 			out = append(out, "other")
 		}
@@ -187,6 +197,8 @@ func (r *loopRunner) ID() string { return r.id }
 
 func (r *loopRunner) Prompt(ctx context.Context, task string) loop.Result { return r.lp.Run(ctx, task) }
 
+func (r *loopRunner) SetMode(mode string) { r.lp.SetMode(loop.Mode(mode)) }
+
 func (r *loopRunner) Close() { _ = r.log.Close() }
 
 // stubRunner is a Runner whose prompt is the function it was given.
@@ -197,6 +209,8 @@ type stubRunner struct {
 func (s stubRunner) ID() string { return "stub-1" }
 
 func (s stubRunner) Prompt(ctx context.Context, task string) loop.Result { return s.run(ctx, task) }
+
+func (s stubRunner) SetMode(string) {}
 
 func (s stubRunner) Close() {}
 
@@ -222,14 +236,14 @@ func TestPromptStreamsTheReplyAndTheCalls(t *testing.T) {
 	if stop := f.prompt(t, id, "Look around."); stop != sdk.StopReasonEndTurn {
 		t.Fatalf("stop reason = %s", stop)
 	}
-	if got, want := f.rec.seen(), []string{"text", "tool", "tool_update", "text"}; !equal(got, want) {
+	if got, want := f.rec.seen(), []string{"mode", "text", "tool", "tool_update", "text"}; !equal(got, want) {
 		t.Fatalf("updates = %v, want %v", got, want)
 	}
-	start := f.rec.updates[1].ToolCall
+	start := f.rec.updates[2].ToolCall
 	if start == nil || start.Title != "list_dir" || start.Kind != sdk.ToolKindRead || start.Status != sdk.ToolCallStatusInProgress {
 		t.Fatalf("tool call = %+v", start)
 	}
-	done := f.rec.updates[2].ToolCallUpdate
+	done := f.rec.updates[3].ToolCallUpdate
 	if done == nil || done.Status == nil || *done.Status != sdk.ToolCallStatusCompleted {
 		t.Fatalf("tool call update = %+v", done)
 	}
@@ -397,5 +411,94 @@ func TestCloseEndsTheSession(t *testing.T) {
 	}
 	if _, err := f.conn.Prompt(context.Background(), sdk.PromptRequest{SessionId: id, Prompt: []sdk.ContentBlock{sdk.TextBlock("late")}}); err == nil {
 		t.Fatal("a closed session took a prompt")
+	}
+}
+
+// selecting answers a permission request with the option that has the id.
+func selecting(id string) func(sdk.RequestPermissionRequest) sdk.RequestPermissionResponse {
+	return func(sdk.RequestPermissionRequest) sdk.RequestPermissionResponse {
+		return sdk.RequestPermissionResponse{Outcome: sdk.NewRequestPermissionOutcomeSelected(sdk.PermissionOptionId(id))}
+	}
+}
+
+// shellReply is a reply that calls run_shell with the command.
+func shellReply(id, command string) fake.Reply {
+	args, _ := json.Marshal(map[string]string{"command": command})
+	return fake.Reply{Calls: []fake.Call{{ID: id, Name: "run_shell", Arguments: string(args)}}}
+}
+
+// lastUpdateOf is the last tool call update the client got for the call with id.
+func (r *recorder) lastUpdateOf(id string) *sdk.SessionToolCallUpdate {
+	var last *sdk.SessionToolCallUpdate
+	for _, u := range r.updates {
+		if u.ToolCallUpdate != nil && string(u.ToolCallUpdate.ToolCallId) == id {
+			last = u.ToolCallUpdate
+		}
+	}
+	return last
+}
+
+func TestAskedCommandRunsWhenTheClientAllowsIt(t *testing.T) {
+	// A credential path makes the boundary check ask. echo only prints the path.
+	client := fake.New(shellReply("sh_1", "echo ~/.aws/credentials"), finishWith("Printed the path."), finishWith("Printed the path."))
+	f := newFixture(t, loopOpen(client))
+	f.rec.permit = selecting("allow_once")
+	id := f.newSession(t)
+	if stop := f.prompt(t, id, "Print it."); stop != sdk.StopReasonEndTurn {
+		t.Fatalf("stop reason = %s", stop)
+	}
+	if f.rec.asked != 1 {
+		t.Fatalf("the client was asked %d times, want 1", f.rec.asked)
+	}
+	done := f.rec.lastUpdateOf("sh_1")
+	if out, _ := done.RawOutput.(string); done.Status == nil || *done.Status != sdk.ToolCallStatusCompleted || !strings.Contains(out, "credentials") {
+		t.Fatalf("tool update = %+v", done)
+	}
+}
+
+func TestRefusedCommandFailsTheCall(t *testing.T) {
+	client := fake.New(shellReply("sh_1", "echo ~/.aws/credentials"), listDir("call_2"), finishWith("Listed instead."), finishWith("Listed instead."))
+	f := newFixture(t, loopOpen(client))
+	f.rec.permit = selecting("reject_once")
+	id := f.newSession(t)
+	f.prompt(t, id, "Print it.")
+	done := f.rec.lastUpdateOf("sh_1")
+	if out, _ := done.RawOutput.(string); done.Status == nil || *done.Status != sdk.ToolCallStatusFailed || !strings.Contains(out, "did not allow") {
+		t.Fatalf("tool update = %+v", done)
+	}
+}
+
+func TestChatModeAnswersWithoutTools(t *testing.T) {
+	client := fake.New(fake.Reply{Text: "Hello there."})
+	f := newFixture(t, loopOpen(client))
+	id := f.newSession(t)
+	if _, err := f.conn.SetSessionMode(context.Background(), sdk.SetSessionModeRequest{SessionId: id, ModeId: "chat"}); err != nil {
+		t.Fatalf("SetSessionMode: %v", err)
+	}
+	f.prompt(t, id, "Say hello.")
+	if got, want := f.rec.seen(), []string{"mode", "text"}; !equal(got, want) {
+		t.Fatalf("updates = %v, want %v", got, want)
+	}
+	if n := len(client.Requests[0].Tools); n != 0 {
+		t.Fatalf("a chat prompt was offered %d tools", n)
+	}
+}
+
+func TestSetModeRejectsAnUnknownMode(t *testing.T) {
+	f := newFixture(t, loopOpen(fake.New()))
+	id := f.newSession(t)
+	if _, err := f.conn.SetSessionMode(context.Background(), sdk.SetSessionModeRequest{SessionId: id, ModeId: "fancy"}); err == nil {
+		t.Fatal("an unknown mode was accepted")
+	}
+}
+
+func TestNewSessionOffersTheModesWithAutoCurrent(t *testing.T) {
+	f := newFixture(t, loopOpen(fake.New()))
+	resp, err := f.conn.NewSession(context.Background(), sdk.NewSessionRequest{Cwd: f.dir, McpServers: []sdk.McpServer{}})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if resp.Modes == nil || resp.Modes.CurrentModeId != "auto" || len(resp.Modes.AvailableModes) != 3 {
+		t.Fatalf("modes = %+v", resp.Modes)
 	}
 }

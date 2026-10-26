@@ -97,6 +97,8 @@ type Loop struct {
 	observer Observer
 	// history is the conversation that the next prompt continues (SPEC §8.2).
 	history []model.Message
+	// mode is the mode that the client set for the prompts that follow (SPEC §8.4).
+	mode Mode
 	// err is the first transcript write that failed. A run with holes in its
 	// transcript cannot support a benchmark number, so it stops.
 	err error
@@ -147,11 +149,12 @@ func (l *Loop) Run(ctx context.Context, task string) Result {
 	}
 	l.write("task", taskRecord{Text: task})
 	l.route(task)
-	if l.on(mech.Layering) && Classify(task) == ModeChat {
-		l.write("classify", classifyRecord{Mode: string(ModeChat)})
+	mode := l.decide(task)
+	l.write("classify", classifyRecord{Mode: string(mode)})
+	l.observer.Mode(string(mode))
+	if mode == ModeChat {
 		return l.chat(ctx, task)
 	}
-	l.write("classify", classifyRecord{Mode: string(ModeTask)})
 	return l.keep(st, l.run(ctx, st, 1))
 }
 
