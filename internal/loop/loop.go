@@ -132,7 +132,17 @@ func (l *Loop) Run(ctx context.Context, task string) Result {
 		return l.chat(ctx, task)
 	}
 	l.write("classify", classifyRecord{Mode: string(ModeTask)})
-	for turn := 1; turn <= l.cfg.MaxTurns; turn++ {
+	return l.run(ctx, st, 1)
+}
+
+// run is the turn loop, from turn first to the stop condition. A checkpoint is
+// written at the start of each turn after the first, so it always holds a
+// completed turn.
+func (l *Loop) run(ctx context.Context, st *state, first int) Result {
+	for turn := first; turn <= l.cfg.MaxTurns; turn++ {
+		if turn > first {
+			l.checkpoint(st, turn-1)
+		}
 		if ctx.Err() != nil {
 			return l.stop(Result{Stop: StopCancelled, Turns: turn - 1, Err: ctx.Err()})
 		}

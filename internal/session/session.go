@@ -2,6 +2,7 @@ package session
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 // once, so a killed run keeps every record it wrote.
 type Log struct {
 	id    string
+	dir   string
 	path  string
 	file  *os.File
 	seq   int
@@ -35,7 +37,33 @@ func Create(root, id string, clock func() time.Time) (*Log, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Log{id: id, path: path, file: f, clock: clock}, nil
+	return &Log{id: id, dir: dir, path: path, file: f, clock: clock}, nil
+}
+
+// Open reopens the transcript of an existing session to append to it. Sequence
+// numbers go on from the last record.
+func Open(root, id string, clock func() time.Time) (*Log, error) {
+	dir := filepath.Join(root, ".nanobird", "sessions", id)
+	path := filepath.Join(dir, "transcript.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	return &Log{id: id, dir: dir, path: path, file: f, seq: bytes.Count(data, []byte("\n")), clock: clock}, nil
+}
+
+// Dir is the session directory, which holds the transcript and the checkpoint.
+func (l *Log) Dir() string {
+	return l.dir
+}
+
+// Seq is the sequence number of the last record written.
+func (l *Log) Seq() int {
+	return l.seq
 }
 
 // ID is the session id.

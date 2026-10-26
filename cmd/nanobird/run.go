@@ -27,14 +27,15 @@ import (
 func runTask(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	taskFile := fs.String("task", "", "file with the task text (required)")
+	taskFile := fs.String("task", "", "file with the task text (required, unless --resume is given)")
+	resume := fs.String("resume", "", "continue the session with this id from its last checkpoint (SPEC §9.3)")
 	unsafe := fs.Bool("unsafe", false, "turn rings 1 to 3 off; ring 4 stays on (NANOBIRD_UNSAFE=1 does the same)")
 	flags := addEngineFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *taskFile == "" {
-		fmt.Fprintln(stderr, "nanobird run: --task is required")
+	if *taskFile == "" && *resume == "" {
+		fmt.Fprintln(stderr, "nanobird run: --task or --resume is required")
 		fs.Usage()
 		return 2
 	}
@@ -47,15 +48,18 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "nanobird run: loop.thinking plan is not implemented yet; use off or on")
 		return 2
 	}
-	raw, err := os.ReadFile(*taskFile)
-	if err != nil {
-		fmt.Fprintf(stderr, "nanobird run: %v\n", err)
-		return 2
-	}
-	task := strings.TrimSpace(string(raw))
-	if task == "" {
-		fmt.Fprintf(stderr, "nanobird run: %s is empty\n", *taskFile)
-		return 2
+	task := ""
+	if *taskFile != "" {
+		raw, err := os.ReadFile(*taskFile)
+		if err != nil {
+			fmt.Fprintf(stderr, "nanobird run: %v\n", err)
+			return 2
+		}
+		task = strings.TrimSpace(string(raw))
+		if task == "" {
+			fmt.Fprintf(stderr, "nanobird run: %s is empty\n", *taskFile)
+			return 2
+		}
 	}
 	switches, err := mech.Parse(strings.Join(cfg.Mechanisms.Disable, ","))
 	if err != nil {
@@ -73,7 +77,12 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	now := time.Now
-	log, err := session.Create(ws.Root(), session.NewID(now()), now)
+	var log *session.Log
+	if *resume != "" {
+		log, err = session.Open(ws.Root(), *resume, now)
+	} else {
+		log, err = session.Create(ws.Root(), session.NewID(now()), now)
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "nanobird run: %v\n", err)
 		return 1
@@ -113,7 +122,13 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	res := loop.New(client, tools.NewRegistry(tools.Builtins()), env, log, loopCfg).Run(ctx, task)
+	lp := loop.New(client, tools.NewRegistry(tools.Builtins()), env, log, loopCfg)
+	var res loop.Result
+	if *resume != "" {
+		res = lp.Resume(ctx)
+	} else {
+		res = lp.Run(ctx, task)
+	}
 
 	fmt.Fprintf(stdout, "stop: %s\nturns: %d\ntranscript: %s\n", res.Stop, res.Turns, log.Path())
 	if res.Summary != "" {

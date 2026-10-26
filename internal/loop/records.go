@@ -16,6 +16,11 @@ type classifyRecord struct {
 	Mode string `json:"mode"`
 }
 
+// resumeRecord marks a run continued from a checkpoint (SPEC §9.3).
+type resumeRecord struct {
+	FromTurn int `json:"from_turn"`
+}
+
 // routeRecord names the categories the router loaded for a task (M1).
 type routeRecord struct {
 	Categories []string `json:"categories"`

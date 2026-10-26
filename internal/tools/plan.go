@@ -16,8 +16,8 @@ type Plan struct {
 
 // PlanItem is one step of the plan.
 type PlanItem struct {
-	Text string
-	Done bool
+	Text string `json:"text"`
+	Done bool   `json:"done"`
 }
 
 // Open lists the items that are not done.
