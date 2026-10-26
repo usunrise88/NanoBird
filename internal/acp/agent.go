@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -26,6 +27,10 @@ type Runner interface {
 	Prompt(ctx context.Context, task string) loop.Result
 	// SetMode sets the mode of the prompts that follow: auto, chat or task (SPEC §8.4).
 	SetMode(mode string)
+	// Thinking is the thinking policy of the next prompts: off, plan or on.
+	Thinking() string
+	// SetThinking sets the thinking policy of the next prompts (SPEC §4.5, §8.4).
+	SetThinking(mode string)
 	// Close releases what the session holds.
 	Close()
 }
@@ -66,7 +71,14 @@ type activeSession struct {
 	closing bool
 	// mode is the mode the session's prompts run in, one of the modes below.
 	mode string
+	// thinking is the thinking policy for the session's next prompt.
+	thinking string
+	// titled is set once the session has a title, from its first task.
+	titled bool
 }
+
+// thinkingValues are the values of the thinking option (SPEC §4.5, §8.4).
+var thinkingValues = []string{"off", "plan", "on"}
 
 // modes are the modes a session offers (SPEC §8.4). Auto is the default.
 var modes = []struct{ id, name, description string }{
@@ -109,7 +121,7 @@ func (a *Agent) NewSession(_ context.Context, p sdk.NewSessionRequest) (sdk.NewS
 	if err != nil {
 		return sdk.NewSessionResponse{}, err
 	}
-	return sdk.NewSessionResponse{SessionId: s.id, Modes: modeState(s.currentMode())}, nil
+	return sdk.NewSessionResponse{SessionId: s.id, Modes: modeState(s.currentMode()), ConfigOptions: configOptions(s.currentThinking())}, nil
 }
 
 // LoadSession continues a session of the workspace, and replays its history to the
@@ -124,7 +136,7 @@ func (a *Agent) LoadSession(_ context.Context, p sdk.LoadSessionRequest) (sdk.Lo
 		return sdk.LoadSessionResponse{}, sdk.NewInternalError(err.Error())
 	}
 	s.obs.replay(entries)
-	return sdk.LoadSessionResponse{Modes: modeState(s.currentMode())}, nil
+	return sdk.LoadSessionResponse{Modes: modeState(s.currentMode()), ConfigOptions: configOptions(s.currentThinking())}, nil
 }
 
 // ResumeSession continues a session of the workspace without replaying its history
@@ -134,7 +146,7 @@ func (a *Agent) ResumeSession(_ context.Context, p sdk.ResumeSessionRequest) (sd
 	if err != nil {
 		return sdk.ResumeSessionResponse{}, err
 	}
-	return sdk.ResumeSessionResponse{Modes: modeState(s.currentMode())}, nil
+	return sdk.ResumeSessionResponse{Modes: modeState(s.currentMode()), ConfigOptions: configOptions(s.currentThinking())}, nil
 }
 
 // ListSessions lists the sessions of the workspace at cwd, each with its first task
@@ -196,6 +208,10 @@ func (a *Agent) Prompt(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResp
 	}
 	defer s.end()
 	s.runner.SetMode(s.currentMode())
+	s.runner.SetThinking(s.currentThinking())
+	if s.claimTitle() {
+		s.obs.title(task)
+	}
 	s.obs.streamed.Reset()
 	res := s.runner.Prompt(run, task)
 	return a.answer(s, res)
@@ -219,9 +235,23 @@ func (a *Agent) Logout(context.Context, sdk.LogoutRequest) (sdk.LogoutResponse, 
 	return sdk.LogoutResponse{}, sdk.NewMethodNotFound("logout")
 }
 
-// SetSessionConfigOption is not built yet.
-func (a *Agent) SetSessionConfigOption(context.Context, sdk.SetSessionConfigOptionRequest) (sdk.SetSessionConfigOptionResponse, error) {
-	return sdk.SetSessionConfigOptionResponse{}, sdk.NewMethodNotFound("session/set_config_option")
+// SetSessionConfigOption sets the thinking option of a session: off, plan or on. It
+// applies from the next prompt (SPEC §4.5, §8.4). The answer lists the options with
+// the value now set.
+func (a *Agent) SetSessionConfigOption(_ context.Context, p sdk.SetSessionConfigOptionRequest) (sdk.SetSessionConfigOptionResponse, error) {
+	if p.ValueId == nil || p.ValueId.ConfigId != "thinking" {
+		return sdk.SetSessionConfigOptionResponse{}, sdk.NewInvalidParams("no such config option")
+	}
+	s, err := a.session(p.ValueId.SessionId)
+	if err != nil {
+		return sdk.SetSessionConfigOptionResponse{}, err
+	}
+	value := string(p.ValueId.Value)
+	if !slices.Contains(thinkingValues, value) {
+		return sdk.SetSessionConfigOptionResponse{}, sdk.NewInvalidParams("no such thinking value: " + value)
+	}
+	s.setThinking(value)
+	return sdk.SetSessionConfigOptionResponse{ConfigOptions: configOptions(value)}, nil
 }
 
 // SetSessionMode sets the mode of the session's prompts: auto, chat or task (SPEC
@@ -248,7 +278,7 @@ func (a *Agent) start(cwd, id string) (*activeSession, error) {
 	if err != nil {
 		return nil, sdk.NewInternalError(err.Error())
 	}
-	s := &activeSession{id: sdk.SessionId(runner.ID()), runner: runner, obs: obs, mode: "auto"}
+	s := &activeSession{id: sdk.SessionId(runner.ID()), runner: runner, obs: obs, mode: "auto", thinking: runner.Thinking(), titled: id != ""}
 	obs.id = s.id
 	a.mu.Lock()
 	a.sessions[s.id] = s
@@ -329,6 +359,48 @@ func (s *activeSession) setMode(mode string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.mode = mode
+}
+
+// currentThinking is the thinking policy of the session's next prompt.
+func (s *activeSession) currentThinking() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.thinking
+}
+
+// setThinking sets the thinking policy of the session's next prompt.
+func (s *activeSession) setThinking(mode string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.thinking = mode
+}
+
+// claimTitle reports whether the session still needs its title, and marks it as
+// titled.
+func (s *activeSession) claimTitle() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.titled {
+		return false
+	}
+	s.titled = true
+	return true
+}
+
+// configOptions are the config options of a session (SPEC §8.4). Thinking is the
+// one that this agent offers so far.
+func configOptions(thinking string) []sdk.SessionConfigOption {
+	values := sdk.SessionConfigSelectOptionsUngrouped{
+		{Name: "Off", Value: "off"},
+		{Name: "Plan", Value: "plan"},
+		{Name: "On", Value: "on"},
+	}
+	opt := sdk.NewSessionConfigOptionSelect(sdk.SessionConfigValueId(thinking), sdk.SessionConfigSelectOptions{Ungrouped: &values})
+	opt.Select.Id = "thinking"
+	opt.Select.Name = "Thinking"
+	desc := "Whether the model thinks: off, on for every turn, or plan, which thinks on the first turn and after a finish rejection (SPEC §4.5)."
+	opt.Select.Description = &desc
+	return []sdk.SessionConfigOption{opt}
 }
 
 // modeState is the modes of a session, with the one it runs in.

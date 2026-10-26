@@ -181,6 +181,7 @@ func (l *Loop) run(ctx context.Context, st *state, first int) Result {
 			return l.stop(Result{Stop: StopError, Turns: turn, Err: err})
 		}
 		st.lastPrompt, st.sentLen = r.Usage.PromptTokens, len(st.msgs)
+		l.observer.Usage(r.Usage.PromptTokens+r.Usage.CompletionTokens, l.cfg.ContextTokens)
 		if len(r.Calls) == 0 && r.Finish == "length" {
 			return l.stop(Result{Stop: StopMaxTokens, Turns: turn})
 		}
@@ -304,7 +305,7 @@ func (l *Loop) once(ctx context.Context, req model.Request, shown bool) (reply, 
 	if !shown {
 		return model.Collect(s)
 	}
-	return model.CollectWith(s, l.observer.Text)
+	return model.CollectWith(s, model.Sink{Text: l.observer.Text, Reasoning: l.observer.Reasoning})
 }
 
 // rescue reads tool calls the model wrote as text (M5, SPEC §5.5).

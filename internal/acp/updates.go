@@ -24,6 +24,34 @@ type updates struct {
 	call string
 }
 
+// Reasoning sends a piece of the model's thinking as it streams (SPEC §8.3).
+func (u *updates) Reasoning(piece string) {
+	u.send(sdk.UpdateAgentThoughtText(piece))
+}
+
+// Usage reports the tokens of the last reply and the size of the context they count
+// against (SPEC §8.3).
+func (u *updates) Usage(used, size int) {
+	u.send(sdk.SessionUpdate{UsageUpdate: &sdk.SessionUsageUpdate{Used: used, Size: size, SessionUpdate: "usage_update"}})
+}
+
+// title sends the title of the session, which is its first task (SPEC §8.3).
+func (u *updates) title(task string) {
+	t := titleText(task)
+	u.send(sdk.SessionUpdate{SessionInfoUpdate: &sdk.SessionSessionInfoUpdate{Title: &t, SessionUpdate: "session_info_update"}})
+}
+
+// titleText is the title of a session: the first line of its first task, cut to 80
+// characters.
+func titleText(task string) string {
+	line, _, _ := strings.Cut(task, "\n")
+	line = strings.TrimSpace(line)
+	if r := []rune(line); len(r) > 80 {
+		line = string(r[:80])
+	}
+	return line
+}
+
 // send sends one update. A notification has no answer, so a failure to send does
 // not stop the run.
 func (u *updates) send(update sdk.SessionUpdate) {

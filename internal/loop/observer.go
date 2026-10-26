@@ -19,6 +19,11 @@ type Observer interface {
 	ToolDone(call model.ToolCall, ok bool, output string)
 	// Plan reports the plan after the todo tool changed it.
 	Plan(items []tools.PlanItem)
+	// Reasoning receives a piece of the model's thinking as it streams (SPEC §8.3).
+	Reasoning(piece string)
+	// Usage reports the tokens of the last reply, and the size of the context they
+	// count against (SPEC §8.3).
+	Usage(used, size int)
 	// Mode reports the decision for a prompt: chat or task (SPEC §4.1).
 	Mode(mode string)
 	// Permit asks whether a call that a safety ring stopped may run (SPEC §5.11,
@@ -34,6 +39,8 @@ func (nopObserver) ToolCall(model.ToolCall)               {}
 func (nopObserver) ToolDone(model.ToolCall, bool, string) {}
 func (nopObserver) Plan([]tools.PlanItem)                 {}
 func (nopObserver) Mode(string)                           {}
+func (nopObserver) Reasoning(string)                      {}
+func (nopObserver) Usage(int, int)                        {}
 func (nopObserver) Permit(context.Context, tools.Permission) tools.Answer {
 	return tools.Deny
 }
