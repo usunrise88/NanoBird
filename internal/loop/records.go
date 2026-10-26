@@ -69,7 +69,7 @@ type usageRecord struct {
 	Reasoning  int `json:"reasoning_tokens"`
 }
 
-func newReplyRecord(turn int, r reply) replyRecord {
+func newReplyRecord(turn int, r model.Reply) replyRecord {
 	rec := replyRecord{
 		Turn:   turn,
 		Text:   r.Text,

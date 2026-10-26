@@ -1,10 +1,13 @@
 package session
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -81,4 +84,51 @@ func NewID(now time.Time) string {
 	var b [3]byte
 	_, _ = rand.Read(b[:]) // crypto/rand does not fail on the supported systems
 	return now.UTC().Format("20060102-150405") + "-" + hex.EncodeToString(b[:])
+}
+
+// Entry is one record read back from a transcript.
+type Entry struct {
+	Seq  int             `json:"seq"`
+	Time string          `json:"time"`
+	Kind string          `json:"kind"`
+	Data json.RawMessage `json:"data"`
+}
+
+// List returns the session ids under root, sorted by name, which sorts them by
+// start time.
+func List(root string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(root, ".nanobird", "sessions"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, e := range entries {
+		if e.IsDir() {
+			ids = append(ids, e.Name())
+		}
+	}
+	return ids, nil
+}
+
+// Read returns every record of a transcript, in order.
+func Read(root, id string) ([]Entry, error) {
+	f, err := os.Open(filepath.Join(root, ".nanobird", "sessions", id, "transcript.jsonl"))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var out []Entry
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for sc.Scan() {
+		var e Entry
+		if err := json.Unmarshal(sc.Bytes(), &e); err != nil {
+			return nil, fmt.Errorf("transcript %s: %w", id, err)
+		}
+		out = append(out, e)
+	}
+	return out, sc.Err()
 }

@@ -1,5 +1,4 @@
-// Package config loads and validates the YAML configuration: defaults, user and
-// workspace files, NANOBIRD_* overrides (SPEC §9.1).
-//
-// Lands with stage 1.
+// Package config loads the YAML configuration: built-in defaults, the user file,
+// the workspace file, NANOBIRD_* environment overrides and the ablation alias
+// (SPEC §9.1). Unknown keys are errors.
 package config

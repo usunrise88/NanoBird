@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -118,17 +117,9 @@ func (l *Loop) Run(ctx context.Context, task string) Result {
 	return l.stop(Result{Stop: StopMaxTurns, Turns: l.cfg.MaxTurns})
 }
 
-// reply is one model turn as the loop reads it.
-type reply struct {
-	Text   string
-	Calls  []model.ToolCall
-	Finish string
-	Usage  model.Usage
-}
-
 // generate asks the model for one reply. With the resilience mechanism on (M7),
 // a failed call is retried with doubling backoff.
-func (l *Loop) generate(ctx context.Context, turn int, msgs []model.Message) (reply, error) {
+func (l *Loop) generate(ctx context.Context, turn int, msgs []model.Message) (model.Reply, error) {
 	thinking := l.cfg.Thinking
 	req := model.Request{
 		Messages:    msgs,
@@ -150,55 +141,36 @@ func (l *Loop) generate(ctx context.Context, turn int, msgs []model.Message) (re
 			return r, nil
 		}
 		if ctx.Err() != nil {
-			return reply{}, err
+			return model.Reply{}, err
 		}
 		if !l.env.Switches.On(mech.Resilience) {
-			return reply{}, err
+			return model.Reply{}, err
 		}
 		if attempt == maxRetries {
-			return reply{}, fmt.Errorf("model call failed after %d attempts: %w", attempt+1, err)
+			return model.Reply{}, fmt.Errorf("model call failed after %d attempts: %w", attempt+1, err)
 		}
 		l.write("mechanism", mechanismRecord{ID: mech.Resilience, Turn: turn, Event: "retry", Attempt: attempt + 1, Error: err.Error()})
 		select {
 		case <-ctx.Done():
-			return reply{}, ctx.Err()
+			return model.Reply{}, ctx.Err()
 		case <-time.After(l.cfg.RetryBackoff << attempt):
 		}
 	}
 }
 
 // once runs one streamed call and collects its reply.
-func (l *Loop) once(ctx context.Context, req model.Request) (reply, error) {
+func (l *Loop) once(ctx context.Context, req model.Request) (model.Reply, error) {
 	s, err := l.client.Complete(ctx, req)
 	if err != nil {
-		return reply{}, err
+		return model.Reply{}, err
 	}
-	defer func() { _ = s.Close() }()
-	var r reply
-	for {
-		ev, err := s.Next()
-		if errors.Is(err, io.EOF) {
-			return reply{}, errors.New("the reply ended without a final event")
-		}
-		if err != nil {
-			return reply{}, err
-		}
-		switch {
-		case ev.Final != nil:
-			r.Finish = ev.Final.FinishReason
-			r.Calls = ev.Final.ToolCalls
-			r.Usage = ev.Final.Usage
-			return r, nil
-		case ev.Text != "":
-			r.Text += ev.Text
-		}
-	}
+	return model.Collect(s)
 }
 
 // nudge answers a reply without a tool call. The message goes to the model and
 // is recorded as an intervention, so it can never be mistaken for the user's
 // text (SPEC §5.13).
-func (l *Loop) nudge(msgs []model.Message, turn int, r reply) []model.Message {
+func (l *Loop) nudge(msgs []model.Message, turn int, r model.Reply) []model.Message {
 	kind := "no_tool_call"
 	text := "Your reply had no tool call, so the task is not finished. Use a tool, or call finish with a summary of what changed."
 	if strings.TrimSpace(r.Text) == "" {
