@@ -40,4 +40,4 @@ done
 
 cd "$WORK/kit"
 uv run --locked acp-tck --agent-cwd "$AGENT_DIR" --timeout 60 --test-timeout 180 \
-    --report-json "$WORK/report.json" -- "$WORK/nanobird" acp --endpoint "http://127.0.0.1:$PORT"
+    --report-json "$WORK/report.json" -- "$WORK/nanobird" acp --endpoint "http://127.0.0.1:$PORT" --backend openai
