@@ -14,15 +14,22 @@ type Reply struct {
 	Usage     Usage
 }
 
+// Sink receives the pieces of a reply as they arrive (SPEC §8.3). A nil function
+// receives nothing.
+type Sink struct {
+	Text      func(piece string)
+	Reasoning func(piece string)
+}
+
 // Collect reads a stream to its final event and returns the reply. It closes
 // the stream.
 func Collect(s Stream) (Reply, error) {
-	return CollectWith(s, nil)
+	return CollectWith(s, Sink{})
 }
 
-// CollectWith is Collect, and it also hands each piece of text to text as it
-// arrives (SPEC §8.3). A nil text collects only.
-func CollectWith(s Stream, text func(piece string)) (Reply, error) {
+// CollectWith is Collect, and it also hands each piece of text and of reasoning to
+// the sink as it arrives.
+func CollectWith(s Stream, sink Sink) (Reply, error) {
 	defer func() { _ = s.Close() }()
 	var r Reply
 	for {
@@ -41,11 +48,14 @@ func CollectWith(s Stream, text func(piece string)) (Reply, error) {
 			return r, nil
 		case ev.Text != "":
 			r.Text += ev.Text
-			if text != nil {
-				text(ev.Text)
+			if sink.Text != nil {
+				sink.Text(ev.Text)
 			}
 		case ev.Reasoning != "":
 			r.Reasoning += ev.Reasoning
+			if sink.Reasoning != nil {
+				sink.Reasoning(ev.Reasoning)
+			}
 		}
 	}
 }

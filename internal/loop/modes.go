@@ -37,6 +37,9 @@ func (l *Loop) chat(ctx context.Context, task string) Result {
 		{Role: model.RoleUser, Content: task},
 	}
 	r, err := l.generateWith(ctx, 1, msgs, nil, l.cfg.Thinking, 0, true)
+	if err == nil {
+		l.observer.Usage(r.Usage.PromptTokens+r.Usage.CompletionTokens, l.cfg.ContextTokens)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return l.stop(Result{Stop: StopCancelled, Turns: 1, Err: err})
@@ -133,4 +136,22 @@ func (l *Loop) decide(task string) Mode {
 // choice to the classifier.
 func (l *Loop) SetMode(m Mode) {
 	l.mode = m
+}
+
+// Thinking is the thinking policy of the prompts that follow: off, plan or on
+// (SPEC §4.5, §8.4).
+func (l *Loop) Thinking() string {
+	switch {
+	case l.cfg.ThinkingPlan:
+		return "plan"
+	case l.cfg.Thinking:
+		return "on"
+	}
+	return "off"
+}
+
+// SetThinking sets the thinking policy of the prompts that follow: off, plan or on.
+func (l *Loop) SetThinking(mode string) {
+	l.cfg.Thinking = mode == "on"
+	l.cfg.ThinkingPlan = mode == "plan"
 }
