@@ -10,6 +10,12 @@ The specification is in [SPEC.md](SPEC.md); section numbers refer to it. NanoBir
 | 3 | NanoLLM primitives | Native backend on RFC R1–R5 as NanoLLM ships them. Knob sweeps decide the defaults. | **G3:** A1 ≥ A0 on E4B, the success criterion (SPEC §1); A1 − A2 measured and published |
 | 4 | Release | Held-out tasks, τ²-bench, docs, ACP Registry. Tag v1.0. | **G4:** held-out score ≥ A0 held-out; τ²-bench ≥ Mingbird under one protocol |
 
+## Decisions after the spec
+
+| Decision | What changes from the spec |
+| --- | --- |
+| macOS waits | No macOS CI job and no darwin release targets for now; the project builds and tests for Windows and Linux. Spec §11.1 still lists macOS, so this is a deliberate deviation. |
+
 ## Placement the spec leaves open
 
 The spec does not put every part of the design into a stage. These are my readings; confirm or correct them before the plan is final.

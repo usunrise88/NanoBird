@@ -11,8 +11,8 @@ LDFLAGS     := -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 DIST        := dist
 export CGO_ENABLED := 0
 
-# The six release platforms (SPEC §11.1).
-TARGETS     := linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64
+# Linux and Windows, amd64 and arm64. macOS is out for now (docs/ROADMAP.md).
+TARGETS     := linux/amd64 linux/arm64 windows/amd64 windows/arm64
 
 .PHONY: all build cross lint test test-race tidy clean help
 
