@@ -108,6 +108,8 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 		Thinking:        cfg.Loop.Thinking == "on",
 		ResultCapBytes:  cfg.Tools.ResultCapBytes,
 		RetryBackoff:    2 * time.Second,
+		ContextTokens:   cfg.Loop.ContextTokens,
+		CompactionAt:    cfg.Loop.CompactionAt,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
