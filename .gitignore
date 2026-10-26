@@ -10,6 +10,9 @@
 # The ACP test kit's checkout, binaries and report (make acp-tck)
 /.acp-tck/
 
+# LRAB results (tools/lrab)
+/.lrab/
+
 # Tooling
 *.test
 *.out
