@@ -24,6 +24,8 @@ type Runner interface {
 	// Prompt runs one task to its stop. The observer that the runner was opened
 	// with hears the run.
 	Prompt(ctx context.Context, task string) loop.Result
+	// SetMode sets the mode of the prompts that follow: auto, chat or task (SPEC §8.4).
+	SetMode(mode string)
 	// Close releases what the session holds.
 	Close()
 }
@@ -62,6 +64,15 @@ type activeSession struct {
 	mu      sync.Mutex
 	cancel  context.CancelFunc
 	closing bool
+	// mode is the mode the session's prompts run in, one of the modes below.
+	mode string
+}
+
+// modes are the modes a session offers (SPEC §8.4). Auto is the default.
+var modes = []struct{ id, name, description string }{
+	{"auto", "Auto", "The classifier of SPEC §4.1 chooses chat or task for each prompt."},
+	{"chat", "Chat", "Each prompt gets one reply, and no tools."},
+	{"task", "Task", "Each prompt runs the full loop with the tools."},
 }
 
 // Initialize answers the handshake: ACP v1, no authentication, text prompts, and the
@@ -98,7 +109,7 @@ func (a *Agent) NewSession(_ context.Context, p sdk.NewSessionRequest) (sdk.NewS
 	if err != nil {
 		return sdk.NewSessionResponse{}, err
 	}
-	return sdk.NewSessionResponse{SessionId: s.id}, nil
+	return sdk.NewSessionResponse{SessionId: s.id, Modes: modeState(s.currentMode())}, nil
 }
 
 // LoadSession continues a session of the workspace, and replays its history to the
@@ -113,16 +124,17 @@ func (a *Agent) LoadSession(_ context.Context, p sdk.LoadSessionRequest) (sdk.Lo
 		return sdk.LoadSessionResponse{}, sdk.NewInternalError(err.Error())
 	}
 	s.obs.replay(entries)
-	return sdk.LoadSessionResponse{}, nil
+	return sdk.LoadSessionResponse{Modes: modeState(s.currentMode())}, nil
 }
 
 // ResumeSession continues a session of the workspace without replaying its history
 // (SPEC §8.2).
 func (a *Agent) ResumeSession(_ context.Context, p sdk.ResumeSessionRequest) (sdk.ResumeSessionResponse, error) {
-	if _, err := a.attach(p.Cwd, p.SessionId); err != nil {
+	s, err := a.attach(p.Cwd, p.SessionId)
+	if err != nil {
 		return sdk.ResumeSessionResponse{}, err
 	}
-	return sdk.ResumeSessionResponse{}, nil
+	return sdk.ResumeSessionResponse{Modes: modeState(s.currentMode())}, nil
 }
 
 // ListSessions lists the sessions of the workspace at cwd, each with its first task
@@ -183,6 +195,7 @@ func (a *Agent) Prompt(ctx context.Context, p sdk.PromptRequest) (sdk.PromptResp
 		return sdk.PromptResponse{}, sdk.NewInvalidRequest("the session cannot take a prompt now: one is running, or it is closing")
 	}
 	defer s.end()
+	s.runner.SetMode(s.currentMode())
 	s.obs.streamed.Reset()
 	res := s.runner.Prompt(run, task)
 	return a.answer(s, res)
@@ -211,9 +224,20 @@ func (a *Agent) SetSessionConfigOption(context.Context, sdk.SetSessionConfigOpti
 	return sdk.SetSessionConfigOptionResponse{}, sdk.NewMethodNotFound("session/set_config_option")
 }
 
-// SetSessionMode is not built yet.
-func (a *Agent) SetSessionMode(context.Context, sdk.SetSessionModeRequest) (sdk.SetSessionModeResponse, error) {
-	return sdk.SetSessionModeResponse{}, sdk.NewMethodNotFound("session/set_mode")
+// SetSessionMode sets the mode of the session's prompts: auto, chat or task (SPEC
+// §8.4). The mode applies from the next prompt.
+func (a *Agent) SetSessionMode(_ context.Context, p sdk.SetSessionModeRequest) (sdk.SetSessionModeResponse, error) {
+	s, err := a.session(p.SessionId)
+	if err != nil {
+		return sdk.SetSessionModeResponse{}, err
+	}
+	for _, m := range modes {
+		if m.id == string(p.ModeId) {
+			s.setMode(m.id)
+			return sdk.SetSessionModeResponse{}, nil
+		}
+	}
+	return sdk.SetSessionModeResponse{}, sdk.NewInvalidParams("no such mode: " + string(p.ModeId))
 }
 
 // start opens a session in the workspace at cwd, continuing the session id when it
@@ -224,7 +248,7 @@ func (a *Agent) start(cwd, id string) (*activeSession, error) {
 	if err != nil {
 		return nil, sdk.NewInternalError(err.Error())
 	}
-	s := &activeSession{id: sdk.SessionId(runner.ID()), runner: runner, obs: obs}
+	s := &activeSession{id: sdk.SessionId(runner.ID()), runner: runner, obs: obs, mode: "auto"}
 	obs.id = s.id
 	a.mu.Lock()
 	a.sessions[s.id] = s
@@ -291,6 +315,30 @@ func (s *activeSession) end() {
 	if s.closing {
 		s.runner.Close()
 	}
+}
+
+// currentMode is the mode the session's prompts run in.
+func (s *activeSession) currentMode() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.mode
+}
+
+// setMode sets the mode that the session's next prompt runs in.
+func (s *activeSession) setMode(mode string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mode = mode
+}
+
+// modeState is the modes of a session, with the one it runs in.
+func modeState(current string) *sdk.SessionModeState {
+	state := &sdk.SessionModeState{CurrentModeId: sdk.SessionModeId(current)}
+	for _, m := range modes {
+		desc := m.description
+		state.AvailableModes = append(state.AvailableModes, sdk.SessionMode{Id: sdk.SessionModeId(m.id), Name: m.name, Description: &desc})
+	}
+	return state
 }
 
 // stop cancels the prompt that runs, if any.

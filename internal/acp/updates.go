@@ -20,6 +20,8 @@ type updates struct {
 	id       sdk.SessionId
 	root     string
 	streamed strings.Builder
+	// call is the id of the tool call that runs, which a permission request names.
+	call string
 }
 
 // send sends one update. A notification has no answer, so a failure to send does
@@ -38,6 +40,7 @@ func (u *updates) Text(piece string) {
 // ToolCall reports a call as in progress. The loop runs it, unless a guard refuses
 // it, and then ToolDone says so.
 func (u *updates) ToolCall(call model.ToolCall) {
+	u.call = call.ID
 	a := argsOf(call)
 	opts := []sdk.ToolCallStartOpt{
 		sdk.WithStartKind(kindOf(call.Name)),
@@ -233,4 +236,41 @@ func titleOf(entries []session.Entry) *string {
 		return nil
 	}
 	return nil
+}
+
+// Mode reports the decision for a prompt, chat or task (SPEC §4.1, §8.3).
+func (u *updates) Mode(mode string) {
+	u.send(sdk.SessionUpdate{CurrentModeUpdate: &sdk.SessionCurrentModeUpdate{CurrentModeId: sdk.SessionModeId(mode), SessionUpdate: "current_mode_update"}})
+}
+
+// Permit asks the client whether a call that a safety ring stopped may run (SPEC
+// §8.5). The options are allow_once and reject_once, and allow_always when the ring
+// offers it. A refusal, or a cancelled prompt, is a denial.
+func (u *updates) Permit(ctx context.Context, p tools.Permission) tools.Answer {
+	opts := []sdk.PermissionOption{
+		{OptionId: "allow_once", Kind: sdk.PermissionOptionKindAllowOnce, Name: "Allow once"},
+		{OptionId: "reject_once", Kind: sdk.PermissionOptionKindRejectOnce, Name: "Reject"},
+	}
+	if p.Family != "" {
+		opts = append(opts, sdk.PermissionOption{OptionId: "allow_always", Kind: sdk.PermissionOptionKindAllowAlways, Name: "Always allow " + p.Family})
+	}
+	<-u.agent.ready
+	title := p.Reason
+	call := sdk.ToolCallUpdate{ToolCallId: sdk.ToolCallId(u.call), Title: &title}
+	if p.Command != "" {
+		call.RawInput = map[string]string{"command": p.Command}
+	}
+	resp, err := u.agent.conn.RequestPermission(ctx, sdk.RequestPermissionRequest{SessionId: u.id, ToolCall: call, Options: opts})
+	if err != nil || resp.Outcome.Selected == nil {
+		return tools.Deny
+	}
+	switch resp.Outcome.Selected.OptionId {
+	case "allow_once":
+		return tools.AllowOnce
+	case "allow_always":
+		if p.Family != "" {
+			return tools.AllowAlways
+		}
+	}
+	return tools.Deny
 }
