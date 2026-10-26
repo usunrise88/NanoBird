@@ -13,6 +13,8 @@ section 4 requires (SPEC §11.4).
     content are copied here.
 
   LRAB benchmark             scorer Apache-2.0, task data CC BY 4.0
-    https://github.com/Mingbird/Mingbird-agent
-    Artifact scorer and task data for tools/lrab (SPEC §10.1). Every published
-    benchmark report credits them.
+    https://github.com/Mingbird/Mingbird-agent (bench/lrab), Copyright 2026 Gustor-Wang
+    The artifact scorer (tools/lrab/scoring/score_task.py) is copied unchanged. The
+    dev tasks and their fixtures (tools/lrab/tasks, tools/lrab/fixtures) are copied
+    unchanged. The data license is in tools/lrab/LICENSE-DATA. Every published
+    benchmark report credits them (SPEC §10.1).
