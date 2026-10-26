@@ -28,18 +28,29 @@ type fixture struct {
 // newFixture serves an agent opened with open, and initializes the connection.
 func newFixture(t *testing.T, open Open) *fixture {
 	t.Helper()
+	// The workspace is registered first, so it is removed last: the agent has to
+	// close its sessions first, since Windows cannot remove an open transcript.
+	dir := t.TempDir()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	t.Cleanup(cancel)
 	agentIn, clientOut := io.Pipe()
 	clientIn, agentOut := io.Pipe()
-	t.Cleanup(func() { _ = clientOut.Close(); _ = agentOut.Close() })
-	go func() { _ = Serve(ctx, NewAgent(open, "test"), agentIn, agentOut) }()
+	served := make(chan struct{})
+	go func() {
+		_ = Serve(ctx, NewAgent(open, "test"), agentIn, agentOut)
+		close(served)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		_ = clientOut.Close()
+		_ = agentOut.Close()
+		<-served
+	})
 	rec := &recorder{}
 	conn := sdk.NewClientSideConnection(rec, clientOut, clientIn)
 	if _, err := conn.Initialize(ctx, sdk.InitializeRequest{ProtocolVersion: sdk.ProtocolVersionNumber}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	return &fixture{conn: conn, rec: rec, dir: t.TempDir()}
+	return &fixture{conn: conn, rec: rec, dir: dir}
 }
 
 // newSession opens a session in the fixture's workspace.
