@@ -14,7 +14,7 @@ export CGO_ENABLED := 0
 # Linux and Windows, amd64 and arm64. macOS is out for now (docs/ROADMAP.md).
 TARGETS     := linux/amd64 linux/arm64 windows/amd64 windows/arm64
 
-.PHONY: all build cross lint lang-check test test-race tidy clean help acp-tck
+.PHONY: all build cross dist lint lang-check test test-race tidy clean help acp-tck
 
 all: build
 
@@ -25,6 +25,10 @@ build:
 ## acp-tck: the official ACP test kit against nanobird acp, with a scripted model (SPEC §12, G2)
 acp-tck:
 	GO=$(GO) sh tools/acptck/run.sh
+
+## dist: the release archives of SPEC §11.3, with sha256sums.txt, into dist/
+dist:
+	GO=$(GO) VERSION=$(VERSION) bash scripts/dist.sh
 
 ## cross: every release target, into dist/<os>_<arch>/
 cross:

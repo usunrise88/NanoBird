@@ -1,0 +1,82 @@
+name: release
+
+# A tag builds the release archives of SPEC §11.3, smoke-tests them on Linux and
+# Windows, and publishes them with sha256sums.txt. A push to a branch that touches
+# these files, or a manual run, is a dry run: the same build and smoke tests under a
+# throwaway version, with no release.
+on:
+  push:
+    tags: ["v*"]
+    branches: ["**"]
+    paths:
+      - ".github/workflows/release.yml"
+      - "scripts/dist.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.0.0-dryrun' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: archives
+        run: VERSION=$TAG bash scripts/dist.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archives
+          path: dist/
+
+  smoke-linux:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: archives
+          path: dist
+      - name: run the Linux binary from its archive
+        run: |
+          mkdir stage
+          tar -xzf "dist/nanobird_${TAG}_linux_amd64.tar.gz" -C stage
+          ./stage/nanobird version
+
+  smoke-windows:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: archives
+          path: dist
+      - name: run the Windows binary from its archive
+        shell: pwsh
+        run: |
+          Expand-Archive -Path "dist/nanobird_${env:TAG}_windows_amd64.zip" -DestinationPath stage
+          .\stage\nanobird.exe version
+
+  publish:
+    # Only a tag publishes. Every other run stops after the smoke tests.
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [smoke-linux, smoke-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: archives
+          path: dist
+      - name: publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$TAG" dist/* --title "$TAG" --generate-notes
