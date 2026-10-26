@@ -795,3 +795,31 @@ func TestModelAndOfflineApplyAtTheNextPrompt(t *testing.T) {
 		t.Fatalf("the next prompt ran with model %q, offline %v", r.gotModel, r.gotOffline)
 	}
 }
+
+func TestDeleteMovesTheSessionToTheTrash(t *testing.T) {
+	client := fake.New(listDir("call_1"), finishWith("done"), finishWith("done"))
+	f := newFixture(t, loopOpen(client))
+	id := f.newSession(t)
+	f.prompt(t, id, "Look.")
+	ctx := context.Background()
+	if _, err := f.conn.UnstableDeleteSession(ctx, sdk.UnstableDeleteSessionRequest{SessionId: id}); err != nil {
+		t.Fatalf("UnstableDeleteSession: %v", err)
+	}
+	if ids, _ := session.List(f.dir); len(ids) != 0 {
+		t.Fatalf("the session is still listed: %v", ids)
+	}
+	trashed, _ := os.ReadDir(filepath.Join(f.dir, ".nanobird", "trash", "sessions"))
+	if len(trashed) != 1 || !strings.HasPrefix(trashed[0].Name(), string(id)+"@") {
+		t.Fatalf("trashed = %v", trashed)
+	}
+	if _, err := f.conn.UnstableDeleteSession(ctx, sdk.UnstableDeleteSessionRequest{SessionId: id}); err == nil {
+		t.Fatal("a deleted session was deleted again")
+	}
+}
+
+func TestDeleteOfAnUnknownSessionIsRefused(t *testing.T) {
+	f := newFixture(t, loopOpen(fake.New()))
+	if _, err := f.conn.UnstableDeleteSession(context.Background(), sdk.UnstableDeleteSessionRequest{SessionId: "never-seen"}); err == nil {
+		t.Fatal("an unknown session was deleted")
+	}
+}

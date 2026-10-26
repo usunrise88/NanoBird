@@ -67,6 +67,9 @@ type Agent struct {
 
 	mu       sync.Mutex
 	sessions map[sdk.SessionId]*activeSession
+	// known maps every session this process has seen to its workspace, since a
+	// delete request carries no workspace (SPEC §8.2).
+	known map[sdk.SessionId]string
 	// caps is what the client offers, from its initialize request (SPEC §8.6).
 	caps sdk.ClientCapabilities
 }
@@ -74,7 +77,7 @@ type Agent struct {
 // NewAgent returns an agent that opens its sessions with open. Serve connects it
 // to a client.
 func NewAgent(open Open, version string) *Agent {
-	return &Agent{open: open, version: version, ready: make(chan struct{}), sessions: map[sdk.SessionId]*activeSession{}}
+	return &Agent{open: open, version: version, ready: make(chan struct{}), sessions: map[sdk.SessionId]*activeSession{}, known: map[sdk.SessionId]string{}}
 }
 
 // activeSession is one open session. cancel stops the prompt that runs, if one
@@ -95,6 +98,9 @@ type activeSession struct {
 	titled bool
 	// prompted is set once a prompt has run, after which the ablation is fixed.
 	prompted bool
+	// closed is closed once the runner is closed, so that a delete can wait for it.
+	closed    chan struct{}
+	closeOnce sync.Once
 	// notices are sent as messages before the first prompt runs.
 	notices []string
 	// offline and model are the settings for the next prompt. applied holds the
@@ -193,6 +199,11 @@ func (a *Agent) ListSessions(_ context.Context, p sdk.ListSessionsRequest) (sdk.
 		return sdk.ListSessionsResponse{}, sdk.NewInternalError(err.Error())
 	}
 	infos := []sdk.SessionInfo{}
+	a.mu.Lock()
+	for _, id := range ids {
+		a.known[sdk.SessionId(id)] = *p.Cwd
+	}
+	a.mu.Unlock()
 	for _, id := range ids {
 		entries, err := session.Read(*p.Cwd, id)
 		if err != nil {
@@ -205,6 +216,34 @@ func (a *Agent) ListSessions(_ context.Context, p sdk.ListSessionsRequest) (sdk.
 		infos = append(infos, info)
 	}
 	return sdk.ListSessionsResponse{Sessions: infos}, nil
+}
+
+// UnstableDeleteSession deletes a session of the agent (SPEC §8.2). An open session is
+// closed first, and cancelled if a prompt runs. Its transcript and log move to the
+// trash of the workspace, so that the deletion can be undone by hand (SPEC §5.6).
+func (a *Agent) UnstableDeleteSession(_ context.Context, p sdk.UnstableDeleteSessionRequest) (sdk.UnstableDeleteSessionResponse, error) {
+	a.mu.Lock()
+	root, known := a.known[p.SessionId]
+	s, open := a.sessions[p.SessionId]
+	delete(a.sessions, p.SessionId)
+	a.mu.Unlock()
+	if !known {
+		return sdk.UnstableDeleteSessionResponse{}, sdk.NewInvalidParams("no such session: " + string(p.SessionId))
+	}
+	if open {
+		s.close()
+		<-s.closed
+	}
+	if err := session.Trash(root, string(p.SessionId), time.Now()); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return sdk.UnstableDeleteSessionResponse{}, sdk.NewInvalidParams("no such session: " + string(p.SessionId))
+		}
+		return sdk.UnstableDeleteSessionResponse{}, sdk.NewInternalError(err.Error())
+	}
+	a.mu.Lock()
+	delete(a.known, p.SessionId)
+	a.mu.Unlock()
+	return sdk.UnstableDeleteSessionResponse{}, nil
 }
 
 // CloseSession ends a session. A prompt that runs is cancelled, and the session's
@@ -371,10 +410,12 @@ func (a *Agent) start(cwd, id string) (*activeSession, error) {
 		offline: runner.Offline(), appliedOffline: runner.Offline(),
 		model: runner.Model(), appliedModel: runner.Model(),
 		models: listModels(runner),
+		closed: make(chan struct{}),
 	}
 	obs.id = s.id
 	a.mu.Lock()
 	a.sessions[s.id] = s
+	a.known[s.id] = cwd
 	a.mu.Unlock()
 	return s, nil
 }
@@ -444,8 +485,16 @@ func (s *activeSession) end() {
 	defer s.mu.Unlock()
 	s.cancel = nil
 	if s.closing {
-		s.runner.Close()
+		s.finish()
 	}
+}
+
+// finish closes the runner, once, and says so.
+func (s *activeSession) finish() {
+	s.closeOnce.Do(func() {
+		s.runner.Close()
+		close(s.closed)
+	})
 }
 
 // currentMode is the mode the session's prompts run in.
@@ -634,7 +683,7 @@ func (s *activeSession) close() {
 		s.cancel()
 		return
 	}
-	s.runner.Close()
+	s.finish()
 }
 
 // answer turns the end of a run into the answer to session/prompt. A run that
