@@ -1,8 +1,10 @@
 package safety
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -57,6 +59,9 @@ func (w *Workspace) keep(abs, bucket string, now time.Time, move bool) (string, 
 	if err != nil {
 		return "", err
 	}
+	// The copy matters more than the ignore line, so a failure to add the line
+	// does not stop the copy.
+	_ = w.ignoreOwnFolder()
 	name := rel + "@" + now.UTC().Format(stamp)
 	dstRel := path.Join(".nanobird", bucket, name)
 	for i := 2; exists(filepath.Join(w.root, filepath.FromSlash(dstRel))); i++ {
@@ -75,6 +80,44 @@ func (w *Workspace) keep(abs, bucket string, now time.Time, move bool) (string, 
 		return "", err
 	}
 	return dstRel, nil
+}
+
+// ignoreOwnFolder adds .nanobird/ to the workspace's .gitignore, the first time
+// the folder is written (SPEC §6.1). A workspace with no .gitignore gets none, and
+// a line that is already there is not added again.
+func (w *Workspace) ignoreOwnFolder() error {
+	p := filepath.Join(w.root, ".gitignore")
+	data, err := os.ReadFile(p)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	text := string(data)
+	for _, line := range strings.Split(text, "\n") {
+		switch strings.TrimSpace(line) {
+		case ".nanobird", ".nanobird/", "/.nanobird", "/.nanobird/":
+			return nil
+		}
+	}
+	eol := "\n"
+	if strings.Contains(text, "\r\n") {
+		eol = "\r\n"
+	}
+	add := "# NanoBird's backups and trash" + eol + ".nanobird/" + eol
+	if text != "" && !strings.HasSuffix(text, "\n") {
+		add = eol + add
+	}
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(add); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func copyFile(src, dst string) error {

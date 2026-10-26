@@ -71,22 +71,30 @@ func RestoreGate(s GateState) *Gate {
 // ConvState is the saved state of a Convergence.
 type ConvState struct {
 	Versions map[string][]string `json:"versions"`
+	Edits    map[string][]Edit   `json:"edits"`
 }
 
-// State copies the recent versions of each file.
+// State copies the recent versions and edits of each file.
 func (c *Convergence) State() ConvState {
 	versions := make(map[string][]string, len(c.versions))
 	for k, v := range c.versions {
 		versions[k] = append([]string(nil), v...)
 	}
-	return ConvState{Versions: versions}
+	edits := make(map[string][]Edit, len(c.edits))
+	for k, v := range c.edits {
+		edits[k] = append([]Edit(nil), v...)
+	}
+	return ConvState{Versions: versions, Edits: edits}
 }
 
-// RestoreConvergence rebuilds a convergence tracker from its saved versions.
+// RestoreConvergence rebuilds a convergence tracker from its saved versions and edits.
 func RestoreConvergence(s ConvState) *Convergence {
-	c := &Convergence{versions: make(map[string][]string, len(s.Versions))}
+	c := NewConvergence()
 	for k, v := range s.Versions {
 		c.versions[k] = append([]string(nil), v...)
+	}
+	for k, v := range s.Edits {
+		c.edits[k] = append([]Edit(nil), v...)
 	}
 	return c
 }

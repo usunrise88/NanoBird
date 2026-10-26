@@ -1,0 +1,34 @@
+[
+  {
+    "calls": [
+      {
+        "name": "edit_file",
+        "arguments": "{\"path\": \"notes.txt\", \"old\": \"beta\", \"new\": \"delta\"}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "edit_file",
+        "arguments": "{\"path\": \"notes.txt\", \"old\": \"delta\", \"new\": \"beta\"}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"Changed beta to delta in notes.txt, then back.\"}"
+      }
+    ]
+  },
+  {
+    "calls": [
+      {
+        "name": "finish",
+        "arguments": "{\"summary\": \"Changed beta to delta in notes.txt, then back.\"}"
+      }
+    ]
+  }
+]

@@ -486,16 +486,35 @@ func (l *Loop) observe(st *state, turn int, call model.ToolCall, out outcome) ou
 		st.anti.Observe(progress)
 	}
 	if out.ok && editing[call.Name] && l.on(mech.EditSafety) {
-		if p := argPath(call.Arguments); p != "" {
-			if content, err := l.readFile(p); err == nil {
-				if hint := st.conv.Observe(p, content); hint != "" {
-					out.full += "\n" + hint
-					l.write("mechanism", mechanismRecord{ID: mech.EditSafety, Turn: turn, Event: "notice", Error: hint})
-				}
-			}
+		if hint := l.convergence(st, call); hint != "" {
+			out.full += "\n" + hint
+			l.write("mechanism", mechanismRecord{ID: mech.EditSafety, Turn: turn, Event: "notice", Error: hint})
 		}
 	}
 	return out
+}
+
+// convergence is the notice for a write that takes a file back to an earlier
+// version, or that undoes an earlier edit to the same text (M6). It returns ""
+// when the write makes progress.
+func (l *Loop) convergence(st *state, call model.ToolCall) string {
+	p := argPath(call.Arguments)
+	if p == "" {
+		return ""
+	}
+	hint := ""
+	if call.Name == "edit_file" {
+		var e mech.Edit
+		if json.Unmarshal([]byte(arguments(call.Arguments)), &e) == nil {
+			hint = st.conv.ObserveEdit(p, e)
+		}
+	}
+	if content, err := l.readFile(p); err == nil {
+		if h := st.conv.Observe(p, content); h != "" {
+			hint = h
+		}
+	}
+	return hint
 }
 
 // hasContent reports whether rel names a non-empty file in the workspace (the
