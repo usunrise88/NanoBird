@@ -2,15 +2,16 @@
 //
 //	nanobird acp               ACP agent over stdio
 //	nanobird run --task FILE   headless run of one task
-//	nanobird run --resume ID   resume a session from its last checkpoint
 //	nanobird doctor            engine probes and config check
 //	nanobird sessions          list and show local sessions
-//	nanobird version           version and commit
+//	nanobird version           version, commit and prefill budget
 package main
 
 import (
 	"fmt"
 	"os"
+
+	"github.com/usunrise88/nanobird/internal/prefill"
 )
 
 // version and commit are stamped by the linker (see the Makefile):
@@ -28,10 +29,15 @@ func main() {
 	switch verb := os.Args[1]; verb {
 	case "version":
 		fmt.Printf("nanobird %s (commit %s)\n", version, commit)
+		fmt.Printf("prefill budget: %d bytes (SPEC §5.1)\n", prefill.BudgetBytes)
 	case "run":
 		os.Exit(runTask(os.Args[2:], os.Stdout, os.Stderr))
-	case "acp", "doctor", "sessions":
-		fmt.Fprintf(os.Stderr, "nanobird: %s is not implemented yet\n", verb)
+	case "doctor":
+		os.Exit(doctorCmd(os.Args[2:], os.Stdout, os.Stderr))
+	case "sessions":
+		os.Exit(sessionsCmd(os.Args[2:], os.Stdout, os.Stderr))
+	case "acp":
+		fmt.Fprintln(os.Stderr, "nanobird: acp is not implemented yet")
 		os.Exit(1)
 	default:
 		usage()
