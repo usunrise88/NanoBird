@@ -128,7 +128,7 @@ func TestManagerLoadsAStreamableServerFlat(t *testing.T) {
 	srv := fakeStreamable(t, "t", &pinged)
 	defer srv.Close()
 	path := writeConfig(t, map[string]Spec{"web": {URL: srv.URL, Headers: map[string]string{"Authorization": "Bearer t"}, Trusted: true}})
-	m, err := Load(context.Background(), path, 12, 10*time.Second, nil)
+	m, err := Load(context.Background(), path, 12, 10*time.Second, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}

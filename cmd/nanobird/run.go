@@ -153,7 +153,7 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 	for _, t := range builtins {
 		builtinNames = append(builtinNames, t.Name)
 	}
-	mgr, err := mcp.Load(ctx, mcpPath, cfg.MCP.FlatLimit, time.Duration(cfg.MCP.CallTimeoutS)*time.Second, builtinNames)
+	mgr, err := mcp.Load(ctx, mcpPath, cfg.MCP.FlatLimit, time.Duration(cfg.MCP.CallTimeoutS)*time.Second, builtinNames, cfg.Offline)
 	if err != nil {
 		fmt.Fprintf(stderr, "nanobird run: %v\n", err)
 		return 1

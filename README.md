@@ -4,7 +4,7 @@ NanoBird is a lightweight agent harness for small local models. It ports the mec
 
 ## Status
 
-Stage 1 in progress. The agent loop, the built-in tools, the workspace and shell checks, transcripts, checkpoints with `run --resume`, and a headless `nanobird run` are in, with golden tests against a scripted model. The loop-side mechanisms are in: the category router (M1), the chat/task classifier (M2), the finish gate with its self-check and test guard (M3), the anti-loop refusals and escalation ladder (M4), format rescue (M5), the convergence notice (M6), skills (M9), staged compaction (N3), closest tool names (N4), the credential check on shell commands (M8), retries (M7) and the write guard (N1). MCP servers load flat over stdio. Structured logs in `.nanobird/logs` and the plan thinking policy are in. Scoped MCP disclosure and ACP are not built yet.
+Stage 1 in progress. The agent loop, the built-in tools, the workspace and shell checks, transcripts, checkpoints with `run --resume`, and a headless `nanobird run` are in, with golden tests against a scripted model. The loop-side mechanisms are in: the category router (M1), the chat/task classifier (M2), the finish gate with its self-check and test guard (M3), the anti-loop refusals and escalation ladder (M4), format rescue (M5), the convergence notice (M6), skills (M9), staged compaction (N3), closest tool names (N4), the credential check on shell commands (M8), retries (M7) and the write guard (N1). MCP servers load flat over stdio or streamable HTTP, with the permissions of SPEC §6.4. Structured logs in `.nanobird/logs` and the plan thinking policy are in. Scoped MCP disclosure and ACP are not built yet.
 
 ## Documents
 
