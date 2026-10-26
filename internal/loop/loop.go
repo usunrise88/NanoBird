@@ -152,9 +152,7 @@ func (l *Loop) Run(ctx context.Context, task string) Result {
 		return l.chat(ctx, task)
 	}
 	l.write("classify", classifyRecord{Mode: string(ModeTask)})
-	res := l.run(ctx, st, 1)
-	l.history = st.msgs
-	return res
+	return l.keep(st, l.run(ctx, st, 1))
 }
 
 // run is the turn loop, from turn first to the stop condition. A checkpoint is

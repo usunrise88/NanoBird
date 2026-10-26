@@ -31,7 +31,7 @@ func acpCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, versio
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	open := func(workspace string, obs loop.Observer) (acp.Runner, error) {
+	open := func(workspace, id string, obs loop.Observer) (acp.Runner, error) {
 		cfg, err := flags.load(workspace)
 		if err != nil {
 			return nil, err
@@ -42,6 +42,7 @@ func acpCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, versio
 		}
 		s, err := newRunSetup(ctx, setupOptions{
 			workspace:  workspace,
+			resume:     id,
 			cfg:        cfg,
 			client:     client,
 			level:      level,
@@ -52,6 +53,12 @@ func acpCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, versio
 		})
 		if err != nil {
 			return nil, err
+		}
+		if id != "" {
+			if err := s.lp.Restore(); err != nil {
+				s.Close()
+				return nil, err
+			}
 		}
 		return &sessionRunner{setup: s}, nil
 	}

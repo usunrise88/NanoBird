@@ -25,12 +25,17 @@ type fixture struct {
 	dir  string
 }
 
-// newFixture serves an agent opened with open, and initializes the connection.
+// newFixture serves an agent opened with open, in a new workspace.
 func newFixture(t *testing.T, open Open) *fixture {
 	t.Helper()
-	// The workspace is registered first, so it is removed last: the agent has to
-	// close its sessions first, since Windows cannot remove an open transcript.
-	dir := t.TempDir()
+	return newFixtureIn(t, t.TempDir(), open)
+}
+
+// newFixtureIn serves an agent opened with open, in the workspace dir, and
+// initializes the connection. The workspace is registered before the agent, so
+// it is removed after the agent has closed its sessions.
+func newFixtureIn(t *testing.T, dir string, open Open) *fixture {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	agentIn, clientOut := io.Pipe()
 	clientIn, agentOut := io.Pipe()
@@ -121,6 +126,8 @@ func (r *recorder) seen() []string {
 	var out []string
 	for _, u := range r.updates {
 		switch {
+		case u.UserMessageChunk != nil:
+			out = append(out, "user")
 		case u.AgentMessageChunk != nil:
 			out = append(out, "text")
 		case u.ToolCall != nil:
@@ -139,14 +146,19 @@ func (r *recorder) seen() []string {
 // loopOpen opens sessions on the real loop, over one scripted model client. The
 // test keeps the client, so it can read the requests that the loop sent.
 func loopOpen(client *fake.Client) Open {
-	return func(workspace string, obs loop.Observer) (Runner, error) {
+	return func(workspace, id string, obs loop.Observer) (Runner, error) {
 		ws, err := safety.NewWorkspace(workspace)
 		if err != nil {
 			return nil, err
 		}
 		now := time.Now
-		id := session.NewID(now())
-		log, err := session.Create(ws.Root(), id, now)
+		var log *session.Log
+		if id != "" {
+			log, err = session.Open(ws.Root(), id, now)
+		} else {
+			id = session.NewID(now())
+			log, err = session.Create(ws.Root(), id, now)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -154,6 +166,12 @@ func loopOpen(client *fake.Client) Open {
 		env := &tools.Env{Workspace: ws, Shell: shell, ShellTimeout: 30 * time.Second, Clock: now}
 		cfg := loop.Config{System: prefill.System(shell.Name), MaxTurns: 10, OutputCapTokens: 8192, ResultCapBytes: 16384}
 		lp := loop.New(client, tools.NewRegistry(tools.Builtins()), env, log, cfg).WithObserver(obs)
+		if id != "" {
+			if err := lp.Restore(); err != nil {
+				_ = log.Close()
+				return nil, err
+			}
+		}
 		return &loopRunner{id: id, lp: lp, log: log}, nil
 	}
 }
@@ -264,7 +282,7 @@ func TestSecondPromptContinuesTheConversation(t *testing.T) {
 
 func TestCancelAnswersCancelled(t *testing.T) {
 	started := make(chan struct{})
-	open := func(string, loop.Observer) (Runner, error) {
+	open := func(string, string, loop.Observer) (Runner, error) {
 		return stubRunner{run: func(ctx context.Context, _ string) loop.Result {
 			close(started)
 			<-ctx.Done()
@@ -309,4 +327,75 @@ func equal(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestLoadReplaysTheHistoryAndTheNextPromptContinuesIt(t *testing.T) {
+	client := fake.New(
+		listDir("call_1"), finishWith("first"), finishWith("first"),
+		listDir("call_2"), finishWith("second"), finishWith("second"),
+	)
+	first := newFixture(t, loopOpen(client))
+	id := first.newSession(t)
+	first.prompt(t, id, "first task")
+	second := newFixtureIn(t, first.dir, loopOpen(client))
+	if _, err := second.conn.LoadSession(context.Background(), sdk.LoadSessionRequest{SessionId: id, Cwd: first.dir, McpServers: []sdk.McpServer{}}); err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got, want := second.rec.seen(), []string{"user", "tool", "tool_update", "text"}; !equal(got, want) {
+		t.Fatalf("replay = %v, want %v", got, want)
+	}
+	if text := second.rec.updates[0].UserMessageChunk; text == nil {
+		t.Fatalf("the first replayed update is not the task")
+	}
+	second.prompt(t, id, "second task")
+	last := client.Requests[len(client.Requests)-1].Messages
+	if len(last) < 3 || last[1].Content != "first task" {
+		t.Fatalf("the loaded session did not continue its conversation: %+v", last)
+	}
+}
+
+func TestResumeContinuesWithoutReplay(t *testing.T) {
+	client := fake.New(
+		listDir("call_1"), finishWith("first"), finishWith("first"),
+		listDir("call_2"), finishWith("second"), finishWith("second"),
+	)
+	first := newFixture(t, loopOpen(client))
+	id := first.newSession(t)
+	first.prompt(t, id, "first task")
+	second := newFixtureIn(t, first.dir, loopOpen(client))
+	if _, err := second.conn.ResumeSession(context.Background(), sdk.ResumeSessionRequest{SessionId: id, Cwd: first.dir, McpServers: []sdk.McpServer{}}); err != nil {
+		t.Fatalf("ResumeSession: %v", err)
+	}
+	if n := len(second.rec.updates); n != 0 {
+		t.Fatalf("resume replayed %d updates", n)
+	}
+	second.prompt(t, id, "second task")
+	if last := client.Requests[len(client.Requests)-1].Messages; len(last) < 3 || last[1].Content != "first task" {
+		t.Fatalf("the resumed session did not continue its conversation: %+v", last)
+	}
+}
+
+func TestListSessionsShowsTheFirstTaskOfEach(t *testing.T) {
+	client := fake.New(listDir("call_1"), finishWith("done"), finishWith("done"))
+	f := newFixture(t, loopOpen(client))
+	id := f.newSession(t)
+	f.prompt(t, id, "first task")
+	resp, err := f.conn.ListSessions(context.Background(), sdk.ListSessionsRequest{Cwd: &f.dir})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(resp.Sessions) != 1 || resp.Sessions[0].SessionId != id || resp.Sessions[0].Title == nil || *resp.Sessions[0].Title != "first task" {
+		t.Fatalf("sessions = %+v", resp.Sessions)
+	}
+}
+
+func TestCloseEndsTheSession(t *testing.T) {
+	f := newFixture(t, loopOpen(fake.New()))
+	id := f.newSession(t)
+	if _, err := f.conn.CloseSession(context.Background(), sdk.CloseSessionRequest{SessionId: id}); err != nil {
+		t.Fatalf("CloseSession: %v", err)
+	}
+	if _, err := f.conn.Prompt(context.Background(), sdk.PromptRequest{SessionId: id, Prompt: []sdk.ContentBlock{sdk.TextBlock("late")}}); err == nil {
+		t.Fatal("a closed session took a prompt")
+	}
 }
