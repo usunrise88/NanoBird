@@ -16,6 +16,12 @@ import (
 // Env is what the tools act on: the workspace, the shell, the clock and the
 // safety settings of the run.
 type Env struct {
+	// Permit asks the client whether a call that a safety ring stopped may run
+	// (SPEC §5.11, §8.5). Nil means nobody can be asked, and the call is denied.
+	Permit func(ctx context.Context, p Permission) Answer
+	// allowed holds the command families that the client allowed for the rest of
+	// the session (SPEC §8.5).
+	allowed   map[string]bool
 	Workspace *safety.Workspace
 	Switches  mech.Switches
 	Shell     Shell

@@ -52,6 +52,15 @@ var runShellTool = Tool{
 	run: runRunShell,
 }
 
+// deniedError is the error of a call that needs a permission it did not get. A run
+// with no client to ask says so.
+func deniedError(env *Env, need string) error {
+	if env.Permit == nil {
+		return fmt.Errorf("%s; a run without a permission prompt denies it", need)
+	}
+	return fmt.Errorf("%s; the client did not allow it", need)
+}
+
 func runRunShell(ctx context.Context, env *Env, args json.RawMessage) (string, error) {
 	var a struct {
 		Command  string `json:"command"`
@@ -68,12 +77,21 @@ func runRunShell(ctx context.Context, env *Env, args json.RawMessage) (string, e
 		case safety.Refuse:
 			return "", fmt.Errorf("refused by safety ring 1: %s", d.Reason)
 		case safety.Ask:
-			return "", fmt.Errorf("needs permission: %s; a run without a permission prompt denies it", d.Reason)
+			p := Permission{Tool: "run_shell", Command: a.Command, Reason: d.Reason}
+			if d.AllowAlways {
+				p.Family = family(a.Command)
+			}
+			if !env.permit(ctx, p) {
+				return "", deniedError(env, "needs permission: "+d.Reason)
+			}
 		}
 	}
 	if env.Switches.On(mech.Boundary) {
 		if name, ok := safety.TouchesSensitive(a.Command); ok {
-			return "", fmt.Errorf("needs permission: the command names %s, a credential location; a run without a permission prompt denies it", name)
+			p := Permission{Tool: "run_shell", Command: a.Command, Reason: "the command names " + name + ", a credential location"}
+			if !env.permit(ctx, p) {
+				return "", deniedError(env, "needs permission: the command names "+name+", a credential location")
+			}
 		}
 	}
 	timeout := env.ShellTimeout
