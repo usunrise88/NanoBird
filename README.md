@@ -10,6 +10,7 @@ Stage 1 in progress. The agent loop, the built-in tools, the workspace and shell
 
 - [docs/SPEC.md](docs/SPEC.md): the development specification. Code comments cite it as `SPEC §5.3`.
 - [docs/ROADMAP.md](docs/ROADMAP.md): the five stages and the measured gate that closes each one.
+- [docs/CONFIG.md](docs/CONFIG.md): every configuration key, its default and its environment override.
 - [docs/clients.md](docs/clients.md): setup notes for ACP clients, written with stage 2.
 
 ## Build
