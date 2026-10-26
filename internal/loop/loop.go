@@ -654,3 +654,16 @@ func errorText(err error) string {
 	}
 	return err.Error()
 }
+
+// SetClient sets the model client of the prompts that follow. It is how the model
+// of a session changes (SPEC §8.4).
+func (l *Loop) SetClient(c model.Client) {
+	l.client = c
+}
+
+// SetTools sets the tool registry of the prompts that follow, for example after the
+// MCP servers were started again (SPEC §8.4).
+func (l *Loop) SetTools(reg *tools.Registry) {
+	l.tools = reg
+	l.env.Catalog = reg
+}
