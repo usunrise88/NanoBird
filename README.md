@@ -20,7 +20,7 @@ Requires Go 1.27.3 (see [go.mod](go.mod)). The build uses no cgo and has no runt
 make build    # dist/nanobird for this machine
 make test     # unit tests
 make lint     # go vet, gofmt, and golangci-lint when it is installed
-make cross    # all six release targets into dist/<os>_<arch>/
+make cross    # the four release targets (Linux, Windows) into dist/<os>_<arch>/
 ```
 
 ## Layout

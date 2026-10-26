@@ -33,13 +33,13 @@ jobs:
       - name: smoke test
         run: ./dist/linux_amd64/nanobird version
 
-  # The same tests on each platform NanoBird ships for (SPEC §11.1): path
-  # handling, shells and encodings differ between them.
+  # The same tests on Linux and Windows. macOS is out of CI for now, see
+  # docs/ROADMAP.md (Decisions after the spec).
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
