@@ -118,7 +118,9 @@ func (l *Loop) Resume(ctx context.Context) Result {
 		l.env.Enabled = map[string]bool{}
 	}
 	l.write("resume", resumeRecord{FromTurn: cp.Turn})
-	return l.run(ctx, st, cp.Turn+1)
+	res := l.run(ctx, st, cp.Turn+1)
+	l.history = st.msgs
+	return res
 }
 
 // readCheckpoint loads the checkpoint of a session directory.

@@ -36,7 +36,7 @@ func (l *Loop) chat(ctx context.Context, task string) Result {
 		{Role: model.RoleSystem, Content: prefill.ChatSystem},
 		{Role: model.RoleUser, Content: task},
 	}
-	r, err := l.generate(ctx, 1, msgs, nil)
+	r, err := l.generateWith(ctx, 1, msgs, nil, l.cfg.Thinking, 0, true)
 	if err != nil {
 		if ctx.Err() != nil {
 			return l.stop(Result{Stop: StopCancelled, Turns: 1, Err: err})

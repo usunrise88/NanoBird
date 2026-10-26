@@ -93,6 +93,10 @@ type Loop struct {
 	// logger receives the run's events in structured form (SPEC §9.4). Prompts
 	// are logged only at debug level. Nil logs nothing.
 	logger *slog.Logger
+	// observer hears the run as it happens (SPEC §8.3). New sets a no-op.
+	observer Observer
+	// history is the conversation that the next prompt continues (SPEC §8.2).
+	history []model.Message
 	// err is the first transcript write that failed. A run with holes in its
 	// transcript cannot support a benchmark number, so it stops.
 	err error
@@ -101,7 +105,7 @@ type Loop struct {
 // New prepares a loop. The mechanism switches come from env.
 func New(client model.Client, reg *tools.Registry, env *tools.Env, log *session.Log, cfg Config) *Loop {
 	env.Catalog = reg
-	return &Loop{client: client, tools: reg, env: env, log: log, cfg: cfg}
+	return &Loop{client: client, tools: reg, env: env, log: log, cfg: cfg, observer: nopObserver{}}
 }
 
 // WithLogger sends the run's events to a structured logger (SPEC §9.4).
@@ -134,11 +138,8 @@ type state struct {
 // condition of SPEC §4.3 is met, or when ctx is cancelled.
 func (l *Loop) Run(ctx context.Context, task string) Result {
 	st := &state{
-		task: task,
-		msgs: []model.Message{
-			{Role: model.RoleSystem, Content: l.cfg.System},
-			{Role: model.RoleUser, Content: task},
-		},
+		task:      task,
+		msgs:      l.conversation(task),
 		anti:      mech.NewLoopTracker(),
 		gate:      mech.NewGate(),
 		conv:      mech.NewConvergence(),
@@ -151,7 +152,9 @@ func (l *Loop) Run(ctx context.Context, task string) Result {
 		return l.chat(ctx, task)
 	}
 	l.write("classify", classifyRecord{Mode: string(ModeTask)})
-	return l.run(ctx, st, 1)
+	res := l.run(ctx, st, 1)
+	l.history = st.msgs
+	return res
 }
 
 // run is the turn loop, from turn first to the stop condition. A checkpoint is
@@ -169,7 +172,7 @@ func (l *Loop) run(ctx context.Context, st *state, first int) Result {
 			return l.stop(Result{Stop: StopError, Turns: turn, Err: err})
 		}
 		thinking, budget := l.thinkingFor(turn, st)
-		r, err := l.generateWith(ctx, turn, st.msgs, l.tools.Offered(l.env.Enabled), thinking, budget)
+		r, err := l.generateWith(ctx, turn, st.msgs, l.tools.Offered(l.env.Enabled), thinking, budget, true)
 		if err != nil {
 			if ctx.Err() != nil {
 				return l.stop(Result{Stop: StopCancelled, Turns: turn, Err: err})
@@ -200,12 +203,18 @@ func (l *Loop) run(ctx context.Context, st *state, first int) Result {
 				}
 				continue
 			}
+			l.observer.ToolCall(call)
 			if hint, ok := l.guard(st, turn, call); !ok {
+				l.observer.ToolDone(call, false, hint)
 				st.msgs = append(st.msgs, toolMessage(call.ID, hint))
 				continue
 			}
 			executed++
 			out := l.observe(st, turn, call, l.execute(ctx, turn, call))
+			l.observer.ToolDone(call, out.ok, out.full)
+			if call.Name == "todo" {
+				l.observer.Plan(l.env.Plan.Items)
+			}
 			st.msgs = append(st.msgs, toolMessage(call.ID, tools.Cap(out.full, l.cfg.ResultCapBytes)))
 		}
 		if l.err != nil {
@@ -228,12 +237,12 @@ type reply = model.Reply
 // generate asks the model for one reply, offering the given tools. With the
 // resilience mechanism on (M7), a failed call is retried with doubling backoff.
 func (l *Loop) generate(ctx context.Context, turn int, msgs []model.Message, offered []model.Tool) (reply, error) {
-	return l.generateWith(ctx, turn, msgs, offered, l.cfg.Thinking, 0)
+	return l.generateWith(ctx, turn, msgs, offered, l.cfg.Thinking, 0, false)
 }
 
 // generateWith is generate with the thinking policy of the turn: whether to think,
-// and the reasoning budget that caps it.
-func (l *Loop) generateWith(ctx context.Context, turn int, msgs []model.Message, offered []model.Tool, thinking bool, budget int) (reply, error) {
+// and the reasoning budget that caps it. A shown reply streams to the observer.
+func (l *Loop) generateWith(ctx context.Context, turn int, msgs []model.Message, offered []model.Tool, thinking bool, budget int, shown bool) (reply, error) {
 	req := model.Request{
 		Messages:        msgs,
 		Tools:           offered,
@@ -244,7 +253,7 @@ func (l *Loop) generateWith(ctx context.Context, turn int, msgs []model.Message,
 	}
 	l.write("request", newRequestRecord(turn, req))
 	for attempt := 0; ; attempt++ {
-		r, err := l.once(ctx, req)
+		r, err := l.once(ctx, req, shown)
 		if err == nil {
 			for i := range r.Calls {
 				if r.Calls[i].ID == "" {
@@ -286,12 +295,15 @@ func (l *Loop) thinkingFor(turn int, st *state) (bool, int) {
 }
 
 // once runs one streamed call and collects its reply.
-func (l *Loop) once(ctx context.Context, req model.Request) (reply, error) {
+func (l *Loop) once(ctx context.Context, req model.Request, shown bool) (reply, error) {
 	s, err := l.client.Complete(ctx, req)
 	if err != nil {
 		return reply{}, err
 	}
-	return model.Collect(s)
+	if !shown {
+		return model.Collect(s)
+	}
+	return model.CollectWith(s, l.observer.Text)
 }
 
 // rescue reads tool calls the model wrote as text (M5, SPEC §5.5).
