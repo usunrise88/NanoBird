@@ -13,6 +13,7 @@ import (
 
 	sdk "github.com/coder/acp-go-sdk"
 	"github.com/usunrise88/nanobird/internal/loop"
+	"github.com/usunrise88/nanobird/internal/mcp"
 	"github.com/usunrise88/nanobird/internal/mech"
 	"github.com/usunrise88/nanobird/internal/model/fake"
 	"github.com/usunrise88/nanobird/internal/prefill"
@@ -175,7 +176,7 @@ func (r *recorder) seen() []string {
 // loopOpen opens sessions on the real loop, over one scripted model client. The
 // test keeps the client, so it can read the requests that the loop sent.
 func loopOpen(client *fake.Client) Open {
-	return func(workspace, id string, obs loop.Observer) (Runner, error) {
+	return func(workspace, id string, servers map[string]mcp.Spec, obs loop.Observer) (Runner, error) {
 		ws, err := safety.NewWorkspace(workspace)
 		if err != nil {
 			return nil, err
@@ -367,7 +368,7 @@ func TestSecondPromptContinuesTheConversation(t *testing.T) {
 
 func TestCancelAnswersCancelled(t *testing.T) {
 	started := make(chan struct{})
-	open := func(string, string, loop.Observer) (Runner, error) {
+	open := func(string, string, map[string]mcp.Spec, loop.Observer) (Runner, error) {
 		return stubRunner{run: func(ctx context.Context, _ string) loop.Result {
 			close(started)
 			<-ctx.Done()
@@ -724,7 +725,7 @@ func TestRunShellRunsInTheClientsTerminalWhenItOffersOne(t *testing.T) {
 }
 
 func TestNoticesAreSaidBeforeThePrompt(t *testing.T) {
-	open := func(string, string, loop.Observer) (Runner, error) {
+	open := func(string, string, map[string]mcp.Spec, loop.Observer) (Runner, error) {
 		return stubRunner{
 			notices: []string{"mcp server web did not start"},
 			run:     func(context.Context, string) loop.Result { return loop.Result{Stop: loop.StopEndTurn} },
@@ -765,7 +766,7 @@ func TestModelAndOfflineApplyAtTheNextPrompt(t *testing.T) {
 		stubRunner: stubRunner{run: func(context.Context, string) loop.Result { return loop.Result{Stop: loop.StopEndTurn} }},
 		models:     []string{"a", "b"},
 	}
-	f := newFixture(t, func(string, string, loop.Observer) (Runner, error) { return r, nil })
+	f := newFixture(t, func(string, string, map[string]mcp.Spec, loop.Observer) (Runner, error) { return r, nil })
 	id := f.newSession(t)
 	ctx := context.Background()
 	set, err := f.conn.SetSessionConfigOption(ctx, sdk.SetSessionConfigOptionRequest{ValueId: &sdk.SetSessionConfigOptionValueId{SessionId: id, ConfigId: "model", Value: "b"}})
@@ -777,9 +778,6 @@ func TestModelAndOfflineApplyAtTheNextPrompt(t *testing.T) {
 		if o.Select != nil {
 			ids[string(o.Select.Id)] = true
 		}
-		if o.Boolean != nil {
-			ids[string(o.Boolean.Id)] = true
-		}
 	}
 	if !ids["thinking"] || !ids["offline"] || !ids["model"] {
 		t.Fatalf("config options = %v", ids)
@@ -787,7 +785,7 @@ func TestModelAndOfflineApplyAtTheNextPrompt(t *testing.T) {
 	if _, err := f.conn.SetSessionConfigOption(ctx, sdk.SetSessionConfigOptionRequest{ValueId: &sdk.SetSessionConfigOptionValueId{SessionId: id, ConfigId: "model", Value: "zzz"}}); err == nil {
 		t.Fatal("an unknown model was accepted")
 	}
-	if _, err := f.conn.SetSessionConfigOption(ctx, sdk.SetSessionConfigOptionRequest{Boolean: &sdk.SetSessionConfigOptionBoolean{SessionId: id, ConfigId: "offline", Value: true}}); err != nil {
+	if _, err := f.conn.SetSessionConfigOption(ctx, sdk.SetSessionConfigOptionRequest{ValueId: &sdk.SetSessionConfigOptionValueId{SessionId: id, ConfigId: "offline", Value: "on"}}); err != nil {
 		t.Fatalf("set offline: %v", err)
 	}
 	f.prompt(t, id, "Go.")
@@ -812,14 +810,72 @@ func TestDeleteMovesTheSessionToTheTrash(t *testing.T) {
 	if len(trashed) != 1 || !strings.HasPrefix(trashed[0].Name(), string(id)+"@") {
 		t.Fatalf("trashed = %v", trashed)
 	}
-	if _, err := f.conn.UnstableDeleteSession(ctx, sdk.UnstableDeleteSessionRequest{SessionId: id}); err == nil {
-		t.Fatal("a deleted session was deleted again")
+	if _, err := f.conn.UnstableDeleteSession(ctx, sdk.UnstableDeleteSessionRequest{SessionId: id}); err != nil {
+		t.Fatalf("deleting a deleted session: %v", err)
+	}
+	if again, _ := os.ReadDir(filepath.Join(f.dir, ".nanobird", "trash", "sessions")); len(again) != 1 {
+		t.Fatalf("the second delete changed the trash: %v", again)
 	}
 }
 
-func TestDeleteOfAnUnknownSessionIsRefused(t *testing.T) {
+func TestDeleteOfAnUnknownSessionSucceedsWithoutAChange(t *testing.T) {
 	f := newFixture(t, loopOpen(fake.New()))
-	if _, err := f.conn.UnstableDeleteSession(context.Background(), sdk.UnstableDeleteSessionRequest{SessionId: "never-seen"}); err == nil {
-		t.Fatal("an unknown session was deleted")
+	if _, err := f.conn.UnstableDeleteSession(context.Background(), sdk.UnstableDeleteSessionRequest{SessionId: "never-seen"}); err != nil {
+		t.Fatalf("deleting an unknown session: %v", err)
+	}
+}
+
+func TestDeleteRefusesAnIdThatIsNotAName(t *testing.T) {
+	f := newFixture(t, loopOpen(fake.New()))
+	if _, err := f.conn.UnstableDeleteSession(context.Background(), sdk.UnstableDeleteSessionRequest{SessionId: "../outside"}); err == nil {
+		t.Fatal("a session id with a path separator was accepted")
+	}
+}
+
+func TestMCPSpecsTakeTheClientsServers(t *testing.T) {
+	list := []sdk.McpServer{
+		{Stdio: &sdk.McpServerStdio{Name: "files", Command: "/bin/files", Args: []string{"--ro"}, Env: []sdk.EnvVariable{{Name: "KEY", Value: "v"}}}},
+		{Http: &sdk.McpServerHttpInline{Name: "web", Url: "https://example.com/mcp", Headers: []sdk.HttpHeader{{Name: "X-Token", Value: "t"}}}},
+		{Sse: &sdk.McpServerSseInline{Name: "old", Url: "https://example.com/sse"}},
+	}
+	specs, notes := mcpSpecs(list)
+	if got := specs["files"]; got.Command != "/bin/files" || len(got.Args) != 1 || got.Env["KEY"] != "v" {
+		t.Fatalf("stdio server = %+v", got)
+	}
+	if got := specs["web"]; got.URL != "https://example.com/mcp" || got.Headers["X-Token"] != "t" {
+		t.Fatalf("http server = %+v", got)
+	}
+	if _, ok := specs["old"]; ok || len(notes) != 1 {
+		t.Fatalf("specs %v, notes %v: the SSE server must not start, and the client must hear why", specs, notes)
+	}
+}
+
+func TestConfigOptionsKeepTheCurrentValueAmongTheChoices(t *testing.T) {
+	var offline, pick *sdk.SessionConfigOptionSelect
+	for _, o := range configOptions("off", true, "gemma", []string{"other"}) {
+		if o.Boolean != nil || o.Select == nil {
+			t.Fatalf("option %+v is not a select, and only a select is safe without the client's boolean capability", o)
+		}
+		switch o.Select.Id {
+		case "offline":
+			offline = o.Select
+		case "model":
+			pick = o.Select
+		}
+	}
+	if offline == nil || offline.CurrentValue != "on" {
+		t.Fatalf("offline = %+v, want the select with the value on", offline)
+	}
+	if pick == nil || pick.CurrentValue != "gemma" {
+		t.Fatalf("model = %+v, want the select with the value gemma", pick)
+	}
+	found := false
+	if listed := pick.Options.Ungrouped; listed != nil {
+		for _, o := range *listed {
+			found = found || o.Value == "gemma"
+		}
+	}
+	if !found {
+		t.Fatalf("the model choices %+v do not include the current model", pick.Options)
 	}
 }

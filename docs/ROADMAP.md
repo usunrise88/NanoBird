@@ -22,6 +22,10 @@ The specification is in [SPEC.md](SPEC.md); section numbers refer to it. NanoBir
 | Prefill token budget | The 797 tokens of SPEC §5.1 is not a tokenizer count. It came from Mingbird's own heuristic estimator (CJK-calibrated), and Mingbird's docs call the wording stale; its current pin is 1,250 estimated tokens. Real counts of NanoBird's default prefill (system prompt and the nine core tool schemas, one user turn): Gemma 4 E4B 1,258 tokens rendered through its template (1,102 raw); Qwen3.5-4B 1,575 rendered (1,051 raw), because Qwen's tool block adds about 520 tokens of template text. The budget is therefore per model. `prefill.BudgetBytes` is pinned at 4,438 bytes, the core set. The router (M1) adds routed categories per task, so the per-task count is measured separately. |
 | Ignore files | `list_dir` and `search_files` read only the root `.gitignore` of the workspace, with git's rules for the common forms (SPEC §6.1 says "ignore-file entries" without naming the files). Nested ignore files and git's global ignore are not read. |
 | Stage 2 before G1 | Stage 2 started with the ACP agent while G1 is open. The agent-first decision (see Agent first) put the agent before the gate, and G1 still needs a replacement for arm F0 and the prefill budget test in CI. The gate is not closed by this work, and stage 2 is not closed either until G2 is met. |
+| ACP test kit | The official ACP test kit (agentclientprotocol/acp-tck) is the conformance check. It runs as `make acp-tck` and in the `acp-tck` CI job, pinned to one commit and installed from its uv.lock (11 PyPI packages). NanoBird writes no kit of its own. The user allowed the kit after its dependencies were reviewed. |
+| Offline option | The ACP option `offline` is a select (off, on), not the boolean of SPEC §8.4. The ACP rule allows a boolean only when the client advertised booleans, and the SDK does not expose that capability. |
+| Delete of a missing session | `session/delete` succeeds for an id that is gone or that the agent has not listed (ACP rule D2). The agent moves only sessions of workspaces it has listed or opened in this process, so a session in another workspace stays on disk. |
+| Client MCP servers | `session/new`, `session/load` and `session/resume` start the MCP servers that the client passes (SPEC §6.4). Stdio and streamable HTTP start. SSE and ACP servers do not start, and the client hears why. |
 
 ## Placement the spec leaves open
 
@@ -33,3 +37,8 @@ The spec does not put every part of the design into a stage. These are my readin
 - **Engine doctor.** G0 needs doctor probes on NanoLLM, so `nanobird doctor` (SPEC §7.4) is a stage 0 deliverable, ahead of the rest of the binary.
 - **Hypotheses H1–H25.** SPEC §10.8 gives their test order, not their stages. Each runs as an LRAB arm in the stage whose code it touches.
 - **Release mechanics.** Stage 4 says "Tag v1.0" but does not specify the release workflow or the archive scripts. SPEC §11.3 says they mirror NanoLLM (`release.yml`, `scripts/dist.sh`).
+
+## Open gaps
+
+- **Permission for MCP calls in attended sessions.** An MCP tool that needs a permission is denied in attended sessions too. SPEC §6.4 says an attended session asks the client, and that prompt is not wired for MCP calls yet. Tools of servers that the client passes are affected the same way.
+- **Live runs.** The ACP test kit has run against the scripted model only. A run against NanoLLM needs the endpoint key, which the user exports, so it is not part of CI yet.

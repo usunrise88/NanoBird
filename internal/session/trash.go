@@ -17,7 +17,7 @@ const trashStamp = "20060102-150405.000000000"
 // deleted session can still be recovered (SPEC §8.2, §5.6). The session must not be
 // open, since its files are in use. The id must name one session, not a path.
 func Trash(root, id string, now time.Time) error {
-	if filepath.Base(id) != id || id == "." || id == ".." {
+	if !IsName(id) {
 		return fmt.Errorf("session id %q is not a name", id)
 	}
 	dir := filepath.Join(root, ".nanobird", "sessions", id)
@@ -43,4 +43,9 @@ func Trash(root, id string, now time.Time) error {
 		return err
 	}
 	return os.Rename(logFile, logDst)
+}
+
+// IsName reports whether a session id is a plain name, which cannot leave its folder.
+func IsName(id string) bool {
+	return id != "" && filepath.Base(id) == id && id != "." && id != ".."
 }

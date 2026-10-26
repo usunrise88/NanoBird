@@ -49,3 +49,23 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test ./...
+
+  # The official ACP test kit (SPEC §12, gate G2) against nanobird acp, with a scripted
+  # model. The kit is pinned and locked; see tools/acptck/README.md.
+  acp-tck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: uv, the kit's package manager
+        run: pipx install uv==0.12.3
+      - name: run the kit
+        run: make acp-tck
+      - name: keep the kit's report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acp-tck-report
+          path: .acp-tck/report.json
