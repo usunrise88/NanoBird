@@ -133,3 +133,19 @@ func TestAssessShell(t *testing.T) {
 		}
 	}
 }
+
+func TestTouchesSensitive(t *testing.T) {
+	cases := map[string]bool{
+		"cat ~/.ssh/id_rsa":                 true,
+		`type C:\Users\me\.aws\credentials`: true,
+		"cat /home/me/.env":                 true,
+		"cat ../.env":                       true,
+		"cat .env":                          false,
+		"go test ./...":                     false,
+	}
+	for cmd, want := range cases {
+		if _, got := TouchesSensitive(cmd); got != want {
+			t.Errorf("TouchesSensitive(%q) = %v, want %v", cmd, got, want)
+		}
+	}
+}

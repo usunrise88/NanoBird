@@ -11,13 +11,13 @@ func TestParseSwitchesOff(t *testing.T) {
 		t.Fatal("listed mechanisms are still on")
 	}
 	var zero Switches
-	if !zero.On(Resilience) {
+	if !zero.On(Resilience) || !zero.On(FinishGate) {
 		t.Fatal("the zero value must leave mechanisms on")
 	}
 }
 
 func TestParseRefusesUnknownAndUnbuiltIds(t *testing.T) {
-	for _, list := range []string{"bogus", "finish_gate", "resilience,anti_loop"} {
+	for _, list := range []string{"bogus", "layering", "compaction", "resilience,plan_reinject"} {
 		if _, err := Parse(list); err == nil {
 			t.Errorf("Parse(%q) was accepted", list)
 		}
