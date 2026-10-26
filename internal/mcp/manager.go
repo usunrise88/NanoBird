@@ -46,7 +46,19 @@ type serverState struct {
 type Manager struct {
 	clients  []*Client
 	tools    []tools.Tool
+	ask      Ask
+	always   map[string]bool
 	Warnings []string
+}
+
+// Ask asks the client whether a call that needs a permission may run (SPEC §6.4). The
+// client answers allow once, allow always, or reject.
+type Ask func(ctx context.Context, p tools.Permission) tools.Answer
+
+// SetAsk sets the hook that asks the client about calls that need a permission. Without
+// one, such calls are denied, as in a run with no one to ask (SPEC §6.4, §5.11).
+func (m *Manager) SetAsk(ask Ask) {
+	m.ask = ask
 }
 
 // Load is LoadWith without the servers that a client passed to its session.
@@ -112,7 +124,7 @@ func LoadWith(ctx context.Context, path string, extra map[string]Spec, flatLimit
 		if slices.Contains(builtin, name) {
 			continue
 		}
-		m.tools = append(m.tools, tools.NewExternal(name, cand.info.Description, cand.info.InputSchema, callFunc(cand, callTimeout)))
+		m.tools = append(m.tools, tools.NewExternal(name, cand.info.Description, cand.info.InputSchema, m.callFunc(cand, callTimeout)))
 	}
 	return m, nil
 }
@@ -181,14 +193,14 @@ func denial(spec Spec, info ToolInfo) string {
 	return ""
 }
 
-// callFunc runs one MCP tool. A call that needs a permission is denied in a run,
-// which has no one to ask (SPEC §6.4, §5.11). A server that times out twice leaves
-// the run.
-func callFunc(c candidate, timeout time.Duration) func(ctx context.Context, args json.RawMessage) (string, error) {
+// callFunc runs one MCP tool. A call that needs a permission asks the client, and is
+// denied when the client refuses or no client is there to ask (SPEC §6.4, §5.11). A
+// server that times out twice leaves the run.
+func (m *Manager) callFunc(c candidate, timeout time.Duration) func(ctx context.Context, args json.RawMessage) (string, error) {
 	name := c.server + "." + c.info.Name
 	return func(ctx context.Context, args json.RawMessage) (string, error) {
-		if reason := denial(c.spec, c.info); reason != "" {
-			return "", fmt.Errorf("needs permission: %s %s; a run without a permission prompt denies it", name, reason)
+		if reason := denial(c.spec, c.info); reason != "" && !m.permit(ctx, name, reason) {
+			return "", fmt.Errorf("needs permission: %s %s; the call was not allowed", name, reason)
 		}
 		if c.state.timeouts >= maxTimeouts {
 			return "", fmt.Errorf("mcp server %s left the run after %d timeouts", c.server, c.state.timeouts)
@@ -202,4 +214,26 @@ func callFunc(c candidate, timeout time.Duration) func(ctx context.Context, args
 		}
 		return out, err
 	}
+}
+
+// permit asks the client whether a call to the tool may run. A tool that the client
+// allowed for the rest of the session runs without another ask.
+func (m *Manager) permit(ctx context.Context, name, reason string) bool {
+	if m.always[name] {
+		return true
+	}
+	if m.ask == nil {
+		return false
+	}
+	switch m.ask(ctx, tools.Permission{Tool: name, Reason: name + " " + reason, Family: name}) {
+	case tools.AllowOnce:
+		return true
+	case tools.AllowAlways:
+		if m.always == nil {
+			m.always = map[string]bool{}
+		}
+		m.always[name] = true
+		return true
+	}
+	return false
 }
