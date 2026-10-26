@@ -12,7 +12,7 @@ import (
 // engineFlags are the flags every command that talks to the engine accepts.
 // Each one overrides the configuration for that command only.
 type engineFlags struct {
-	cwd      *string
+	cwd      *string // nil for a command whose workspace comes from elsewhere
 	endpoint *string
 	model    *string
 	keyEnv   *string
@@ -21,8 +21,15 @@ type engineFlags struct {
 }
 
 func addEngineFlags(fs *flag.FlagSet) *engineFlags {
+	f := addModelFlags(fs)
+	f.cwd = fs.String("cwd", ".", "workspace directory; its .nanobird/config.yaml applies")
+	return f
+}
+
+// addModelFlags adds the flags that override the model and the loop. The workspace
+// is not one of them: an ACP session takes its own from the client.
+func addModelFlags(fs *flag.FlagSet) *engineFlags {
 	return &engineFlags{
-		cwd:      fs.String("cwd", ".", "workspace directory; its .nanobird/config.yaml applies"),
 		endpoint: fs.String("endpoint", "", "override model.endpoint"),
 		model:    fs.String("model", "", "override model.name"),
 		keyEnv:   fs.String("key-env", "", "override model.key_env, the variable that holds the API key"),
@@ -31,9 +38,10 @@ func addEngineFlags(fs *flag.FlagSet) *engineFlags {
 	}
 }
 
-// load builds the configuration: files and environment first, then the flags.
-func (f *engineFlags) load() (config.Config, error) {
-	cfg, err := config.Load(*f.cwd, os.LookupEnv)
+// load builds the configuration of a workspace: its files and the environment
+// first, then the flags.
+func (f *engineFlags) load(workspace string) (config.Config, error) {
+	cfg, err := config.Load(workspace, os.LookupEnv)
 	if err != nil {
 		return config.Config{}, err
 	}
