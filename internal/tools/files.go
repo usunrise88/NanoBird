@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/usunrise88/nanobird/internal/mech"
+	"github.com/usunrise88/nanobird/internal/safety"
 )
 
 const (
@@ -102,8 +104,16 @@ func runListDir(_ context.Context, env *Env, args json.RawMessage) (string, erro
 	if err != nil {
 		return "", err
 	}
+	rel, err := env.Workspace.Rel(abs)
+	if err != nil {
+		return "", err
+	}
+	ig, err := safety.LoadIgnore(env.Workspace.Root())
+	if err != nil {
+		return "", err
+	}
 	var b strings.Builder
-	if err := listTree(&b, abs, "", 1, min(max(a.Depth, 1), maxListDepth)); err != nil {
+	if err := listTree(&b, abs, rel, "", 1, min(max(a.Depth, 1), maxListDepth), ig.Ignored); err != nil {
 		return "", err
 	}
 	if b.Len() == 0 {
@@ -112,14 +122,17 @@ func runListDir(_ context.Context, env *Env, args json.RawMessage) (string, erro
 	return b.String(), nil
 }
 
-// listTree writes the entries of dir, descending while level is within depth.
-func listTree(b *strings.Builder, dir, prefix string, level, depth int) error {
+// listTree writes the entries of dir, descending while level is within depth. rel
+// is dir's path in the workspace, and skip leaves out the entries the ignore list
+// names (SPEC §6.1).
+func listTree(b *strings.Builder, dir, rel, prefix string, level, depth int, skip func(rel string, isDir bool) bool) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
 	}
 	for _, e := range entries {
-		if e.Name() == ".git" || e.Name() == ".nanobird" {
+		entryRel := path.Join(rel, e.Name())
+		if e.Name() == ".git" || e.Name() == ".nanobird" || skip(entryRel, e.IsDir()) {
 			continue
 		}
 		name := prefix + e.Name()
@@ -129,7 +142,7 @@ func listTree(b *strings.Builder, dir, prefix string, level, depth int) error {
 		}
 		b.WriteString(name + "/\n")
 		if level < depth {
-			if err := listTree(b, filepath.Join(dir, e.Name()), name+"/", level+1, depth); err != nil {
+			if err := listTree(b, filepath.Join(dir, e.Name()), entryRel, name+"/", level+1, depth, skip); err != nil {
 				return err
 			}
 		}

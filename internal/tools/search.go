@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/usunrise88/nanobird/internal/safety"
 )
 
 // maxMatches bounds one search (SPEC §6.1).
@@ -48,6 +50,10 @@ func runSearchFiles(_ context.Context, env *Env, args json.RawMessage) (string, 
 	if err != nil {
 		return "", err
 	}
+	ig, err := safety.LoadIgnore(env.Workspace.Root())
+	if err != nil {
+		return "", err
+	}
 	var b strings.Builder
 	matches, truncated := 0, false
 	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
@@ -56,9 +62,12 @@ func runSearchFiles(_ context.Context, env *Env, args json.RawMessage) (string, 
 			return filepath.SkipDir
 		}
 		if d.IsDir() {
-			if p != root && (d.Name() == ".git" || d.Name() == ".nanobird") {
+			if p != root && (d.Name() == ".git" || d.Name() == ".nanobird" || ignored(env.Workspace, ig, p, true)) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if ignored(env.Workspace, ig, p, false) {
 			return nil
 		}
 		if a.Glob != "" {
@@ -127,4 +136,10 @@ func runTestsCall(ctx context.Context, env *Env, _ json.RawMessage) (string, err
 		verdict = "PASS"
 	}
 	return fmt.Sprintf("%s (%s)\n%s", verdict, runner.Name, out), nil
+}
+
+// ignored reports whether the ignore list leaves out the path abs (SPEC §6.1).
+func ignored(w *safety.Workspace, ig *safety.Ignore, abs string, isDir bool) bool {
+	rel, err := w.Rel(abs)
+	return err == nil && ig.Ignored(rel, isDir)
 }
