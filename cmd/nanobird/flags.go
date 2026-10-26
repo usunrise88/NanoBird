@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
+
 	"flag"
+	"github.com/usunrise88/nanobird/internal/model"
+	"github.com/usunrise88/nanobird/internal/model/nanollm"
 	"os"
 	"strings"
 
@@ -14,6 +18,7 @@ import (
 type engineFlags struct {
 	cwd      *string // nil for a command whose workspace comes from elsewhere
 	endpoint *string
+	backend  *string
 	model    *string
 	keyEnv   *string
 	maxTurns *int
@@ -31,6 +36,7 @@ func addEngineFlags(fs *flag.FlagSet) *engineFlags {
 func addModelFlags(fs *flag.FlagSet) *engineFlags {
 	return &engineFlags{
 		endpoint: fs.String("endpoint", "", "override model.endpoint"),
+		backend:  fs.String("backend", "", "override model.backend: nanollm (the native API) or openai (the OpenAI dialect)"),
 		model:    fs.String("model", "", "override model.name"),
 		keyEnv:   fs.String("key-env", "", "override model.key_env, the variable that holds the API key"),
 		maxTurns: fs.Int("max-turns", 0, "override loop.max_turns"),
@@ -48,6 +54,9 @@ func (f *engineFlags) load(workspace string) (config.Config, error) {
 	if *f.endpoint != "" {
 		cfg.Model.Endpoint = *f.endpoint
 	}
+	if *f.backend != "" {
+		cfg.Model.Backend = *f.backend
+	}
 	if *f.model != "" {
 		cfg.Model.Name = *f.model
 	}
@@ -64,14 +73,36 @@ func (f *engineFlags) load(workspace string) (config.Config, error) {
 	return cfg, nil
 }
 
-// client opens the endpoint. Both model.backend values speak the OpenAI
-// dialect for now; the native NanoLLM backend waits for the Harness API (SPEC §12).
-func (f *engineFlags) client(cfg config.Config) (*openai.Client, error) {
-	return openai.New(openai.Config{
-		BaseURL: cfg.Model.Endpoint,
-		Model:   cfg.Model.Name,
-		APIKey:  os.Getenv(cfg.Model.KeyEnv),
+// engineClient is the model endpoint of a run: the native NanoLLM client, or the
+// OpenAI-dialect client for engines that have no native API (SPEC §7.3).
+type engineClient interface {
+	model.Client
+	ListModels(ctx context.Context) ([]string, error)
+}
+
+// client opens the endpoint that model.backend names.
+func (f *engineFlags) client(cfg config.Config) (engineClient, error) {
+	if cfg.Model.Backend == "openai" {
+		c, err := openai.New(openai.Config{
+			BaseURL: cfg.Model.Endpoint,
+			Model:   cfg.Model.Name,
+			APIKey:  os.Getenv(cfg.Model.KeyEnv),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
+	}
+	c, err := nanollm.New(nanollm.Config{
+		BaseURL:    cfg.Model.Endpoint,
+		Model:      cfg.Model.Name,
+		APIKey:     os.Getenv(cfg.Model.KeyEnv),
+		ToolFormat: cfg.Loop.ToolFormat,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 // splitComma reads a comma-separated list, dropping empty items.

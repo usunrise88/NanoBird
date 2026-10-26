@@ -84,6 +84,17 @@ type Final struct {
 	FinishReason string // "stop", "length", "tool_calls", ...
 	ToolCalls    []ToolCall
 	Usage        Usage
+	// Parse says how the engine read the reply's text, when it reports it (RFC R4).
+	Parse *ParseReport
+}
+
+// ParseReport says how the engine read the reply's text (RFC R4). Status is "ok",
+// "repaired" or "failed"; under "failed", Raw holds the whole reply text and the
+// engine read no calls from it.
+type ParseReport struct {
+	Status string
+	Raw    string
+	Error  string
 }
 
 // Usage counts the tokens of one turn, as the engine reports them.

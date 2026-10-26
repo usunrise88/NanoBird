@@ -115,7 +115,7 @@ func TestAcpServesAPromptOverTheEngineClient(t *testing.T) {
 	clientIn, agentOut := io.Pipe()
 	done := make(chan int, 1)
 	go func() {
-		done <- acpCommand([]string{"--endpoint", model.URL, "--model", "scripted"}, agentIn, agentOut, io.Discard, "test")
+		done <- acpCommand([]string{"--endpoint", model.URL, "--model", "scripted", "--backend", "openai"}, agentIn, agentOut, io.Discard, "test")
 	}()
 	t.Cleanup(func() {
 		_ = clientOut.Close()
