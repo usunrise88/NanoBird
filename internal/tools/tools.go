@@ -56,6 +56,20 @@ func (t Tool) Run(ctx context.Context, env *Env, args json.RawMessage) (string, 
 	return t.run(ctx, env, args)
 }
 
+// NewExternal wraps a tool that another process serves, such as an MCP server's
+// (SPEC §6.4). Its category is mcp: it is offered with the core tools, not routed.
+func NewExternal(name, description string, parameters json.RawMessage, call func(ctx context.Context, args json.RawMessage) (string, error)) Tool {
+	return Tool{
+		Name:        name,
+		Description: description,
+		Parameters:  parameters,
+		Category:    "mcp",
+		run: func(ctx context.Context, _ *Env, args json.RawMessage) (string, error) {
+			return call(ctx, args)
+		},
+	}
+}
+
 // categories maps each built-in tool to its M1 category (SPEC §5.1).
 var categories = map[string]string{
 	"read_file": "core", "list_dir": "core", "create_file": "core", "edit_file": "core",
@@ -123,12 +137,13 @@ func (r *Registry) Schemas() []model.Tool {
 	return out
 }
 
-// Offered returns the tools a request carries: the core tools, and the tools of
-// each enabled category or each tool enabled by name (SPEC §5.1).
+// Offered returns the tools a request carries: the core tools, the MCP tools
+// that load flat, and the tools of each enabled category or each tool enabled by
+// name (SPEC §5.1, §6.4).
 func (r *Registry) Offered(enabled map[string]bool) []model.Tool {
 	var out []model.Tool
 	for _, t := range r.tools {
-		if t.Category == "core" || enabled[t.Category] || enabled[t.Name] {
+		if t.Category == "core" || t.Category == "mcp" || enabled[t.Category] || enabled[t.Name] {
 			out = append(out, model.Tool{Name: t.Name, Description: t.Description, Parameters: t.Parameters})
 		}
 	}

@@ -1,0 +1,152 @@
+package mcp
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"maps"
+	"os"
+	"slices"
+	"time"
+
+	"github.com/usunrise88/nanobird/internal/tools"
+)
+
+// startTimeout bounds the start and the tool listing of one server.
+const startTimeout = 30 * time.Second
+
+// maxTimeouts is how many calls may time out before a server leaves the run
+// (SPEC §6.4).
+const maxTimeouts = 2
+
+// file is the layout of mcp.json.
+type file struct {
+	Servers map[string]Spec `json:"servers"`
+}
+
+// candidate is one tool that passed curation, with the connection it runs on.
+type candidate struct {
+	server string
+	spec   Spec
+	info   ToolInfo
+	client *Client
+	state  *serverState
+}
+
+// serverState counts the timeouts of one server during the run.
+type serverState struct {
+	timeouts int
+}
+
+// Manager runs the configured servers and offers their tools flat, as
+// server.tool (SPEC §6.4). Scoped disclosure above the flat limit is not built
+// yet. Above the limit no MCP tool loads, and Warnings says so.
+type Manager struct {
+	clients  []*Client
+	tools    []tools.Tool
+	Warnings []string
+}
+
+// Load starts the servers of the config file and lists their tools. A missing
+// file means no servers. A server that fails to start is a warning, not an error.
+// builtin names the built-in tools; an MCP tool with the same name is hidden,
+// because the built-in wins (SPEC §6.4).
+func Load(ctx context.Context, path string, flatLimit int, callTimeout time.Duration, builtin []string) (*Manager, error) {
+	m := &Manager{}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return m, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var f file
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&f); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	var listed []candidate
+	for _, name := range slices.Sorted(maps.Keys(f.Servers)) {
+		spec := f.Servers[name]
+		sctx, cancel := context.WithTimeout(ctx, startTimeout)
+		c, err := Start(sctx, name, spec)
+		if err != nil {
+			cancel()
+			m.Warnings = append(m.Warnings, fmt.Sprintf("mcp server %s did not start: %v", name, err))
+			continue
+		}
+		infos, err := c.ListTools(sctx)
+		cancel()
+		if err != nil {
+			c.Close()
+			m.Warnings = append(m.Warnings, fmt.Sprintf("mcp server %s did not list its tools: %v", name, err))
+			continue
+		}
+		m.clients = append(m.clients, c)
+		state := &serverState{}
+		for _, info := range infos {
+			if allowed(spec, info.Name) {
+				listed = append(listed, candidate{server: name, spec: spec, info: info, client: c, state: state})
+			}
+		}
+	}
+	if len(listed) > flatLimit {
+		m.Warnings = append(m.Warnings, fmt.Sprintf("%d MCP tools exceed mcp.flat_limit (%d); scoped disclosure is not built yet, so none are loaded", len(listed), flatLimit))
+		return m, nil
+	}
+	for _, cand := range listed {
+		name := cand.server + "." + cand.info.Name
+		if slices.Contains(builtin, name) {
+			continue
+		}
+		m.tools = append(m.tools, tools.NewExternal(name, cand.info.Description, cand.info.InputSchema, callFunc(cand, callTimeout)))
+	}
+	return m, nil
+}
+
+// Tools returns the flat MCP tools, ready to join the built-in registry.
+func (m *Manager) Tools() []tools.Tool {
+	return m.tools
+}
+
+// Close stops every server.
+func (m *Manager) Close() {
+	for _, c := range m.clients {
+		c.Close()
+	}
+}
+
+// allowed applies the curation of a server: allow is a whitelist when set, and
+// deny always removes.
+func allowed(spec Spec, tool string) bool {
+	if len(spec.Allow) > 0 && !slices.Contains(spec.Allow, tool) {
+		return false
+	}
+	return !slices.Contains(spec.Deny, tool)
+}
+
+// callFunc runs one MCP tool. A tool from an untrusted server, and not in its
+// auto_approve list, needs a permission. A run has no one to ask, so it is
+// denied (SPEC §6.4, §5.11). A server that times out twice leaves the run.
+func callFunc(c candidate, timeout time.Duration) func(ctx context.Context, args json.RawMessage) (string, error) {
+	name := c.server + "." + c.info.Name
+	return func(ctx context.Context, args json.RawMessage) (string, error) {
+		if !c.spec.Trusted && !slices.Contains(c.spec.AutoApprove, c.info.Name) {
+			return "", fmt.Errorf("needs permission: %s comes from an untrusted MCP server; a run without a permission prompt denies it", name)
+		}
+		if c.state.timeouts >= maxTimeouts {
+			return "", fmt.Errorf("mcp server %s left the run after %d timeouts", c.server, c.state.timeouts)
+		}
+		cctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		out, err := c.client.CallTool(cctx, c.info.Name, args)
+		if errors.Is(cctx.Err(), context.DeadlineExceeded) {
+			c.state.timeouts++
+			return "", fmt.Errorf("%s timed out after %s", name, timeout)
+		}
+		return out, err
+	}
+}

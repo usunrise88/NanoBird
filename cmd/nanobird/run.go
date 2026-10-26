@@ -13,6 +13,7 @@ import (
 
 	"github.com/usunrise88/nanobird/internal/config"
 	"github.com/usunrise88/nanobird/internal/loop"
+	"github.com/usunrise88/nanobird/internal/mcp"
 	"github.com/usunrise88/nanobird/internal/mech"
 	"github.com/usunrise88/nanobird/internal/prefill"
 	"github.com/usunrise88/nanobird/internal/safety"
@@ -122,7 +123,25 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	lp := loop.New(client, tools.NewRegistry(tools.Builtins()), env, log, loopCfg)
+	mcpPath := cfg.MCP.Config
+	if !filepath.IsAbs(mcpPath) {
+		mcpPath = filepath.Join(ws.Root(), ".nanobird", mcpPath)
+	}
+	builtins := tools.Builtins()
+	builtinNames := make([]string, 0, len(builtins))
+	for _, t := range builtins {
+		builtinNames = append(builtinNames, t.Name)
+	}
+	mgr, err := mcp.Load(ctx, mcpPath, cfg.MCP.FlatLimit, time.Duration(cfg.MCP.CallTimeoutS)*time.Second, builtinNames)
+	if err != nil {
+		fmt.Fprintf(stderr, "nanobird run: %v\n", err)
+		return 1
+	}
+	defer mgr.Close()
+	for _, w := range mgr.Warnings {
+		fmt.Fprintf(stderr, "nanobird run: %s\n", w)
+	}
+	lp := loop.New(client, tools.NewRegistry(append(builtins, mgr.Tools()...)), env, log, loopCfg)
 	var res loop.Result
 	if *resume != "" {
 		res = lp.Resume(ctx)
