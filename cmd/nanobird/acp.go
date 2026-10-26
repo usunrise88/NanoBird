@@ -85,5 +85,11 @@ func (r *sessionRunner) Prompt(ctx context.Context, task string) loop.Result {
 // SetMode sets the mode of the session's next prompts.
 func (r *sessionRunner) SetMode(mode string) { r.setup.lp.SetMode(loop.Mode(mode)) }
 
+// Thinking is the thinking policy of the session's next prompts.
+func (r *sessionRunner) Thinking() string { return r.setup.lp.Thinking() }
+
+// SetThinking sets the thinking policy of the session's next prompts.
+func (r *sessionRunner) SetThinking(mode string) { r.setup.lp.SetThinking(mode) }
+
 // Close releases the session.
 func (r *sessionRunner) Close() { r.setup.Close() }

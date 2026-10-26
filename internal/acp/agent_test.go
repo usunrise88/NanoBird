@@ -146,6 +146,10 @@ func (r *recorder) seen() []string {
 			out = append(out, "plan")
 		case u.CurrentModeUpdate != nil:
 			out = append(out, "mode")
+		case u.AgentThoughtChunk != nil:
+			out = append(out, "thought")
+		case u.UsageUpdate != nil, u.SessionInfoUpdate != nil:
+			// Not part of the sequence the tests compare; they check these apart.
 		default:
 			out = append(out, "other")
 		}
@@ -199,6 +203,10 @@ func (r *loopRunner) Prompt(ctx context.Context, task string) loop.Result { retu
 
 func (r *loopRunner) SetMode(mode string) { r.lp.SetMode(loop.Mode(mode)) }
 
+func (r *loopRunner) Thinking() string { return r.lp.Thinking() }
+
+func (r *loopRunner) SetThinking(mode string) { r.lp.SetThinking(mode) }
+
 func (r *loopRunner) Close() { _ = r.log.Close() }
 
 // stubRunner is a Runner whose prompt is the function it was given.
@@ -211,6 +219,10 @@ func (s stubRunner) ID() string { return "stub-1" }
 func (s stubRunner) Prompt(ctx context.Context, task string) loop.Result { return s.run(ctx, task) }
 
 func (s stubRunner) SetMode(string) {}
+
+func (s stubRunner) Thinking() string { return "off" }
+
+func (s stubRunner) SetThinking(string) {}
 
 func (s stubRunner) Close() {}
 
@@ -239,11 +251,19 @@ func TestPromptStreamsTheReplyAndTheCalls(t *testing.T) {
 	if got, want := f.rec.seen(), []string{"mode", "text", "tool", "tool_update", "text"}; !equal(got, want) {
 		t.Fatalf("updates = %v, want %v", got, want)
 	}
-	start := f.rec.updates[2].ToolCall
+	var start *sdk.SessionUpdateToolCall
+	var done *sdk.SessionToolCallUpdate
+	for _, u := range f.rec.updates {
+		if u.ToolCall != nil {
+			start = u.ToolCall
+		}
+		if u.ToolCallUpdate != nil {
+			done = u.ToolCallUpdate
+		}
+	}
 	if start == nil || start.Title != "list_dir" || start.Kind != sdk.ToolKindRead || start.Status != sdk.ToolCallStatusInProgress {
 		t.Fatalf("tool call = %+v", start)
 	}
-	done := f.rec.updates[3].ToolCallUpdate
 	if done == nil || done.Status == nil || *done.Status != sdk.ToolCallStatusCompleted {
 		t.Fatalf("tool call update = %+v", done)
 	}
@@ -501,4 +521,69 @@ func TestNewSessionOffersTheModesWithAutoCurrent(t *testing.T) {
 	if resp.Modes == nil || resp.Modes.CurrentModeId != "auto" || len(resp.Modes.AvailableModes) != 3 {
 		t.Fatalf("modes = %+v", resp.Modes)
 	}
+}
+
+func TestThinkingOptionIsOfferedAndSet(t *testing.T) {
+	f := newFixture(t, loopOpen(fake.New()))
+	id := f.newSession(t)
+	resp, err := f.conn.NewSession(context.Background(), sdk.NewSessionRequest{Cwd: f.dir, McpServers: []sdk.McpServer{}})
+	if err != nil || len(resp.ConfigOptions) != 1 || resp.ConfigOptions[0].Select == nil || resp.ConfigOptions[0].Select.Id != "thinking" || resp.ConfigOptions[0].Select.CurrentValue != "off" {
+		t.Fatalf("config options = %+v, %v", resp.ConfigOptions, err)
+	}
+	set, err := f.conn.SetSessionConfigOption(context.Background(), sdk.SetSessionConfigOptionRequest{ValueId: &sdk.SetSessionConfigOptionValueId{SessionId: id, ConfigId: "thinking", Value: "plan"}})
+	if err != nil || len(set.ConfigOptions) != 1 || set.ConfigOptions[0].Select.CurrentValue != "plan" {
+		t.Fatalf("SetSessionConfigOption = %+v, %v", set, err)
+	}
+	if _, err := f.conn.SetSessionConfigOption(context.Background(), sdk.SetSessionConfigOptionRequest{ValueId: &sdk.SetSessionConfigOptionValueId{SessionId: id, ConfigId: "thinking", Value: "fancy"}}); err == nil {
+		t.Fatal("an unknown thinking value was accepted")
+	}
+}
+
+func TestThinkingStreamsAsThoughtChunks(t *testing.T) {
+	client := fake.New(
+		fake.Reply{Reasoning: "Let me think.", Calls: []fake.Call{{ID: "call_1", Name: "list_dir", Arguments: "{}"}}},
+		finishWith("done"), finishWith("done"),
+	)
+	f := newFixture(t, loopOpen(client))
+	id := f.newSession(t)
+	if _, err := f.conn.SetSessionConfigOption(context.Background(), sdk.SetSessionConfigOptionRequest{ValueId: &sdk.SetSessionConfigOptionValueId{SessionId: id, ConfigId: "thinking", Value: "on"}}); err != nil {
+		t.Fatalf("SetSessionConfigOption: %v", err)
+	}
+	f.prompt(t, id, "Think it through.")
+	if seen := f.rec.seen(); len(seen) == 0 || !contains(seen, "thought") {
+		t.Fatalf("updates = %v, want a thought chunk", seen)
+	}
+	if req := client.Requests[0]; req.Thinking == nil || !*req.Thinking {
+		t.Fatal("the model was not asked to think")
+	}
+}
+
+func TestPromptSendsUsageAndTheTitleFromTheFirstTask(t *testing.T) {
+	client := fake.New(listDir("call_1"), finishWith("done"), finishWith("done"))
+	f := newFixture(t, loopOpen(client))
+	id := f.newSession(t)
+	f.prompt(t, id, "Look at the first task")
+	var title *string
+	usage := false
+	for _, u := range f.rec.updates {
+		if u.SessionInfoUpdate != nil {
+			title = u.SessionInfoUpdate.Title
+		}
+		if u.UsageUpdate != nil {
+			usage = true
+		}
+	}
+	if !usage || title == nil || *title != "Look at the first task" {
+		t.Fatalf("usage = %v, title = %v", usage, title)
+	}
+}
+
+// contains reports whether the kinds hold the one named.
+func contains(kinds []string, kind string) bool {
+	for _, k := range kinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
 }
