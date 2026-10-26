@@ -1,29 +1,32 @@
 package mcp
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"os"
-	"os/exec"
 	"strings"
 )
 
-// protocolVersion is the MCP revision the client speaks.
+// protocolVersion is the MCP revision the client asks for. A server answers with
+// the revision it speaks, and the client uses that one from then on.
 const protocolVersion = "2024-11-05"
 
 // errorUnsupported is the JSON-RPC code for a method the client does not offer.
 const errorUnsupported = -32601
 
-// Spec is one server of mcp.json (SPEC §6.4). Trusted and AutoApprove decide
-// whether its tools may run without a prompt; Allow and Deny curate its tools.
+// Spec is one server of mcp.json (SPEC §6.4). A server runs as a command over
+// stdio, or is reached at a URL over streamable HTTP. Headers go with every request
+// to the URL; $NAME and ${NAME} in a header value expand from the environment, so a
+// token need not sit in the file. Trusted and AutoApprove decide whether its tools
+// may run without a prompt; Allow and Deny curate its tools.
 type Spec struct {
 	Command     string            `json:"command"`
 	Args        []string          `json:"args"`
 	Env         map[string]string `json:"env"`
+	URL         string            `json:"url"`
+	Headers     map[string]string `json:"headers"`
 	Trusted     bool              `json:"trusted"`
 	AutoApprove []string          `json:"auto_approve"`
 	Allow       []string          `json:"allow"`
@@ -52,40 +55,44 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
-// Client is one stdio connection to an MCP server. Requests run one at a time.
+// Client is one connection to an MCP server. Requests run one at a time.
 type Client struct {
 	name   string
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	inbox  chan rpc
+	t      transport
 	nextID int
 }
 
-// Start launches the server and performs the initialize handshake. The server's
-// stderr is discarded, so a chatty server cannot fill the run's output.
+// transport carries JSON-RPC messages to one server, over stdio or streamable HTTP.
+type transport interface {
+	// roundTrip sends a request and returns its reply. A request that the server
+	// makes meanwhile goes to answer.
+	roundTrip(ctx context.Context, req rpc, answer func(context.Context, rpc)) (rpc, error)
+	// send sends a message that has no reply: a notification or an answer.
+	send(ctx context.Context, m rpc) error
+	// negotiated records the protocol version the server agreed to.
+	negotiated(version string)
+	// close ends the connection.
+	close()
+}
+
+// Start connects to a server and performs the initialize handshake. A server has
+// a command or a URL, and exactly one of them.
 func Start(ctx context.Context, name string, spec Spec) (*Client, error) {
-	// The server lives as long as the client, not as long as the start-up context:
-	// Close stops it.
-	cmd := exec.CommandContext(context.Background(), spec.Command, spec.Args...)
-	cmd.Env = os.Environ()
-	for k, v := range spec.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
+	if (spec.Command == "") == (spec.URL == "") {
+		return nil, errors.New("set exactly one of command (stdio) or url (streamable HTTP)")
 	}
-	cmd.Stderr = io.Discard
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
+	var t transport
+	if spec.URL != "" {
+		t = newStreamable(spec)
+	} else {
+		s, err := startStdio(name, spec)
+		if err != nil {
+			return nil, err
+		}
+		t = s
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("mcp server %s: %w", name, err)
-	}
-	c := &Client{name: name, cmd: cmd, stdin: stdin, inbox: make(chan rpc, 64)}
-	go c.read(stdout)
-	_, err = c.call(ctx, "initialize", map[string]any{
+	c := &Client{name: name, t: t}
+	raw, err := c.call(ctx, "initialize", map[string]any{
 		"protocolVersion": protocolVersion,
 		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]string{"name": "nanobird", "version": "dev"},
@@ -94,7 +101,15 @@ func Start(ctx context.Context, name string, spec Spec) (*Client, error) {
 		c.Close()
 		return nil, err
 	}
-	if err := c.notify("notifications/initialized"); err != nil {
+	var agreed struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	if err := json.Unmarshal(raw, &agreed); err != nil {
+		c.Close()
+		return nil, fmt.Errorf("mcp server %s: initialize: %w", name, err)
+	}
+	t.negotiated(agreed.ProtocolVersion)
+	if err := c.notify(ctx, "notifications/initialized"); err != nil {
 		c.Close()
 		return nil, err
 	}
@@ -166,87 +181,46 @@ func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage
 	return text, nil
 }
 
-// Close stops the server.
+// Close ends the connection, and with it the server.
 func (c *Client) Close() {
-	_ = c.stdin.Close()
-	if c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
-	}
-	_ = c.cmd.Wait()
+	c.t.close()
 }
 
-// read pumps the server's messages into the inbox, one per line.
-func (c *Client) read(r io.Reader) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	for sc.Scan() {
-		var m rpc
-		if json.Unmarshal(sc.Bytes(), &m) == nil {
-			c.inbox <- m
-		}
-	}
-	close(c.inbox)
-}
-
-// call sends one request and waits for its response. Requests from the server
-// are answered: a ping gets an empty result, anything else an unsupported error.
+// call sends one request and waits for its reply.
 func (c *Client) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	c.nextID++
-	id := c.nextID
-	if err := c.send(rpc{JSONRPC: "2.0", ID: json.RawMessage(fmt.Sprint(id)), Method: method, Params: marshal(params)}); err != nil {
-		return nil, err
+	req := rpc{JSONRPC: "2.0", ID: json.RawMessage(fmt.Sprint(c.nextID)), Method: method, Params: marshal(params)}
+	m, err := c.t.roundTrip(ctx, req, c.answer)
+	if err != nil {
+		return nil, fmt.Errorf("mcp server %s: %s: %w", c.name, method, err)
 	}
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("mcp server %s: %s: %w", c.name, method, ctx.Err())
-		case m, ok := <-c.inbox:
-			if !ok {
-				return nil, fmt.Errorf("mcp server %s: the connection closed during %s", c.name, method)
-			}
-			if m.Method != "" {
-				if len(m.ID) > 0 {
-					c.answer(m)
-				}
-				continue
-			}
-			var got int
-			if json.Unmarshal(m.ID, &got) != nil || got != id {
-				continue
-			}
-			if m.Error != nil {
-				return nil, fmt.Errorf("mcp server %s: %s: %s (code %d)", c.name, method, m.Error.Message, m.Error.Code)
-			}
-			return m.Result, nil
-		}
+	if m.Error != nil {
+		return nil, fmt.Errorf("mcp server %s: %s: %s (code %d)", c.name, method, m.Error.Message, m.Error.Code)
 	}
+	return m.Result, nil
 }
 
-// notify sends a notification, which has no response.
-func (c *Client) notify(method string) error {
-	return c.send(rpc{JSONRPC: "2.0", Method: method})
+// notify sends a notification, which has no reply.
+func (c *Client) notify(ctx context.Context, method string) error {
+	return c.t.send(ctx, rpc{JSONRPC: "2.0", Method: method})
 }
 
-// answer replies to a request the server made.
-func (c *Client) answer(m rpc) {
+// answer replies to a request the server made. A ping gets an empty result, and
+// anything else an unsupported error.
+func (c *Client) answer(ctx context.Context, m rpc) {
 	reply := rpc{JSONRPC: "2.0", ID: m.ID}
 	if m.Method == "ping" {
 		reply.Result = json.RawMessage("{}")
 	} else {
 		reply.Error = &rpcError{Code: errorUnsupported, Message: "method not supported by nanobird: " + m.Method}
 	}
-	_ = c.send(reply)
+	_ = c.t.send(ctx, reply)
 }
 
-func (c *Client) send(m rpc) error {
-	data, err := json.Marshal(m)
-	if err != nil {
-		return err
-	}
-	if _, err := c.stdin.Write(append(data, '\n')); err != nil {
-		return fmt.Errorf("mcp server %s: %w", c.name, err)
-	}
-	return nil
+// sameID reports whether two JSON-RPC ids are the same. A reply carries the id of
+// its request.
+func sameID(a, b json.RawMessage) bool {
+	return len(a) > 0 && bytes.Equal(bytes.TrimSpace(a), bytes.TrimSpace(b))
 }
 
 // marshal encodes request parameters. Parameters that cannot be encoded send null.
