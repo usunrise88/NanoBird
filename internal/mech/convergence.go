@@ -1,17 +1,24 @@
 package mech
 
-// convergenceHint is the notice an edit that undoes the edit before it draws.
-const convergenceHint = "This edit undid the one before it, so the file is going back and forth. Read the file again and change your approach."
+// convergenceHint is the notice a write that undoes an earlier edit draws.
+const convergenceHint = "This edit undid an earlier edit to the same text, so the file is going back and forth. Read the file again and change your approach."
 
-// Convergence notices an edit that returns a file to the version it had two
-// writes earlier (M6). It keeps the last three versions of each file.
+// Edit is one exact replacement that edit_file made.
+type Edit struct {
+	Old string `json:"old"`
+	New string `json:"new"`
+}
+
+// Convergence notices writes that undo one another (M6). It keeps the last three
+// versions of each file and the last three edits to each file.
 type Convergence struct {
 	versions map[string][]string
+	edits    map[string][]Edit
 }
 
 // NewConvergence returns a tracker for one task.
 func NewConvergence() *Convergence {
-	return &Convergence{versions: map[string][]string{}}
+	return &Convergence{versions: map[string][]string{}, edits: map[string][]Edit{}}
 }
 
 // Observe records the content a write left in file. It returns the notice when
@@ -27,4 +34,22 @@ func (c *Convergence) Observe(file, content string) string {
 		return convergenceHint
 	}
 	return ""
+}
+
+// ObserveEdit records an exact replacement made in file. It returns the notice
+// when the replacement undoes one of the last three edits to file: it puts back
+// the old text of that edit and takes away its new text.
+func (c *Convergence) ObserveEdit(file string, e Edit) string {
+	hint := ""
+	for _, prev := range c.edits[file] {
+		if e.Old == prev.New && e.New == prev.Old {
+			hint = convergenceHint
+		}
+	}
+	v := append(c.edits[file], e)
+	if len(v) > 3 {
+		v = v[len(v)-3:]
+	}
+	c.edits[file] = v
+	return hint
 }
