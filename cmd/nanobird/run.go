@@ -7,14 +7,17 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/usunrise88/nanobird/internal/config"
 	"github.com/usunrise88/nanobird/internal/loop"
 	"github.com/usunrise88/nanobird/internal/mech"
 	"github.com/usunrise88/nanobird/internal/prefill"
 	"github.com/usunrise88/nanobird/internal/safety"
 	"github.com/usunrise88/nanobird/internal/session"
+	"github.com/usunrise88/nanobird/internal/skills"
 	"github.com/usunrise88/nanobird/internal/tools"
 )
 
@@ -87,8 +90,18 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 		Unattended: true,
 		Clock:      now,
 	}
+	list, err := skills.Load(skillDirs(ws.Root(), cfg)...)
+	if err != nil {
+		fmt.Fprintf(stderr, "nanobird run: %v\n", err)
+		return 1
+	}
+	env.Skills = list
+	system := prefill.System(env.Shell.Name)
+	if len(list) > 0 {
+		system += "\nSkills you can load with the skills tool:\n" + skills.Index(list)
+	}
 	loopCfg := loop.Config{
-		System:          prefill.System(env.Shell.Name),
+		System:          system,
 		MaxTurns:        cfg.Loop.MaxTurns,
 		OutputCapTokens: cfg.Loop.OutputCapTokens,
 		Temperature:     cfg.Loop.Temperature,
@@ -118,4 +131,15 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	return 1
+}
+
+// skillDirs lists where skills are read from: the workspace first, then the
+// configured directories, then the user's config directory (SPEC §5.9).
+func skillDirs(root string, cfg config.Config) []string {
+	dirs := []string{filepath.Join(root, ".nanobird", "skills")}
+	dirs = append(dirs, cfg.Skills.Dirs...)
+	if dir, err := os.UserConfigDir(); err == nil {
+		dirs = append(dirs, filepath.Join(dir, "nanobird", "skills"))
+	}
+	return dirs
 }
