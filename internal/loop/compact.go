@@ -33,7 +33,15 @@ const (
 // plan are never compacted (M3d). Level 2, old reasoning, has nothing to drop:
 // NanoBird does not keep reasoning in the history.
 func (l *Loop) compactIfNeeded(ctx context.Context, turn int, st *state) error {
-	if !l.on(mech.Compaction) || st.lastPrompt == 0 {
+	if !l.on(mech.Compaction) {
+		return nil
+	}
+	// After a reset, or a restore from a checkpoint, the marker can point past the
+	// messages it counted, so it starts again from nothing.
+	if st.sentLen > len(st.msgs) {
+		st.lastPrompt, st.sentLen = 0, 0
+	}
+	if st.lastPrompt == 0 {
 		return nil
 	}
 	limit := int(float64(l.contextTokens()) * l.compactionAt())

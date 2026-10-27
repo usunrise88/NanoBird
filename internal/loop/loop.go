@@ -436,6 +436,7 @@ func (l *Loop) failedTurn(st *state, turn int) (Result, bool) {
 	case mech.Reset:
 		l.write("mechanism", mechanismRecord{ID: mech.AntiLoop, Turn: turn, Event: "reset"})
 		st.msgs = l.resetMessages(st)
+		st.lastPrompt, st.sentLen = 0, 0
 		st.anti.Reset()
 	case mech.Exit:
 		blocker := "the model made no progress across two escalations; last refusal: " + st.lastRejection
