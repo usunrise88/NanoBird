@@ -341,3 +341,18 @@ func TestUndoingAnEditDrawsANotice(t *testing.T) {
 		t.Fatal("the undo drew no notice")
 	}
 }
+
+func TestCompactionStartsAgainAfterAReset(t *testing.T) {
+	h := newHarness(t, t.TempDir(), defaultConfig())
+	st := &state{
+		msgs:       []model.Message{{Role: model.RoleSystem, Content: "system"}, {Role: model.RoleUser, Content: "task"}},
+		lastPrompt: 1000,
+		sentLen:    28,
+	}
+	if err := h.loop.compactIfNeeded(context.Background(), 1, st); err != nil {
+		t.Fatalf("compaction failed: %v", err)
+	}
+	if st.sentLen != 0 || st.lastPrompt != 0 {
+		t.Fatalf("the stale marker was kept: sentLen %d, lastPrompt %d", st.sentLen, st.lastPrompt)
+	}
+}
