@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -354,5 +355,70 @@ func TestCompactionStartsAgainAfterAReset(t *testing.T) {
 	}
 	if st.sentLen != 0 || st.lastPrompt != 0 {
 		t.Fatalf("the stale marker was kept: sentLen %d, lastPrompt %d", st.sentLen, st.lastPrompt)
+	}
+}
+
+func TestAnOverflowedPromptIsNotRetried(t *testing.T) {
+	h := newHarness(t, t.TempDir(), defaultConfig(), fake.Reply{Overflow: true})
+	res := h.loop.Run(context.Background(), "task")
+	if res.Stop != StopError || !errors.Is(res.Err, model.ErrContextFull) {
+		t.Fatalf("result = %+v", res)
+	}
+	if strings.Contains(transcript(t, h.log.Path()), `"event":"retry"`) {
+		t.Fatal("an overflowed prompt was retried")
+	}
+}
+
+func TestOverflowWithoutATailDigestsThenFitsOrStops(t *testing.T) {
+	big := strings.Repeat("line of tool output\n", 800)
+	msgs := func() []model.Message {
+		return []model.Message{
+			{Role: model.RoleSystem, Content: "system"},
+			{Role: model.RoleUser, Content: "task"},
+			{Role: model.RoleTool, ToolCallID: "a", Content: big},
+			{Role: model.RoleTool, ToolCallID: "b", Content: big},
+		}
+	}
+
+	small := defaultConfig()
+	small.ContextTokens = 100000
+	h := newHarness(t, t.TempDir(), small)
+	st := &state{msgs: msgs(), lastPrompt: 95000, sentLen: 4}
+	if err := h.loop.compactIfNeeded(context.Background(), 1, st); err != nil {
+		t.Fatalf("the digested prompt fits, but compaction failed: %v", err)
+	}
+	if !strings.Contains(transcript(t, h.log.Path()), `"event":"compact"`) || st.lastPrompt != 0 {
+		t.Fatal("the digest was not recorded or the marker was kept")
+	}
+
+	tight := defaultConfig()
+	tight.ContextTokens = 1000
+	h = newHarness(t, t.TempDir(), tight)
+	st = &state{msgs: msgs(), lastPrompt: 1000, sentLen: 4}
+	if err := h.loop.compactIfNeeded(context.Background(), 1, st); !errors.Is(err, model.ErrContextFull) {
+		t.Fatalf("error = %v, want an overflow", err)
+	}
+}
+
+// counting is a client whose tokenizer counts one token a character.
+type counting struct{ *fake.Client }
+
+func (c counting) Tokenize(_ context.Context, text string) (int, error) {
+	return len(text), nil
+}
+
+func TestTheEngineTokenizerDecidesWhetherThePromptFits(t *testing.T) {
+	big := strings.Repeat("line of tool output\n", 800)
+	cfg := defaultConfig()
+	cfg.ContextTokens = 10000
+	h := newHarness(t, t.TempDir(), cfg)
+	h.loop = New(counting{h.client}, tools.NewRegistry(tools.Builtins()), h.env, h.log, cfg)
+	st := &state{msgs: []model.Message{
+		{Role: model.RoleSystem, Content: "system"},
+		{Role: model.RoleUser, Content: "task"},
+		{Role: model.RoleTool, ToolCallID: "a", Content: big},
+	}, lastPrompt: 9500, sentLen: 3}
+	if err := h.loop.compactIfNeeded(context.Background(), 1, st); !errors.Is(err, model.ErrContextFull) {
+		t.Fatalf("error = %v, want an overflow: the engine tokenizer counts the output as more than the window", err)
 	}
 }

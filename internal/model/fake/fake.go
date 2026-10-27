@@ -18,6 +18,8 @@ type Reply struct {
 	Calls     []Call `json:"calls,omitempty"`
 	Finish    string `json:"finish,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// Overflow makes Complete fail as an engine does when the prompt does not fit.
+	Overflow bool `json:"overflow,omitempty"`
 	// Prompt is the prompt size the engine reports for the turn (SPEC §4.4).
 	Prompt int `json:"prompt_tokens,omitempty"`
 }
@@ -66,6 +68,9 @@ func (c *Client) Complete(ctx context.Context, req model.Request) (model.Stream,
 	}
 	r := c.script[0]
 	c.script = c.script[1:]
+	if r.Overflow {
+		return nil, model.ErrContextFull
+	}
 	if r.Error != "" {
 		return nil, errors.New(r.Error)
 	}

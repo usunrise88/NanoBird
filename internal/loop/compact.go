@@ -45,18 +45,18 @@ func (l *Loop) compactIfNeeded(ctx context.Context, turn int, st *state) error {
 		return nil
 	}
 	limit := int(float64(l.contextTokens()) * l.compactionAt())
-	if st.lastPrompt+mech.TokensOf(bytesOf(st.msgs[st.sentLen:])) < limit {
+	if st.lastPrompt+l.tokensOf(ctx, messagesText(st.msgs[st.sentLen:])) < limit {
 		return nil
 	}
 	cut := tailCut(st.msgs)
 	if cut <= 2 {
-		return nil
+		return l.fitWithoutTail(ctx, st, turn)
 	}
 	if n := dropOutputs(st.msgs, cut); n > 0 {
 		l.write("mechanism", mechanismRecord{ID: mech.Compaction, Turn: turn, Event: "compact", Level: 1, Count: n})
 	}
 	// The tool schemas are part of every prompt, so they count toward the budget too.
-	if mech.TokensOf(bytesOf(st.msgs)+schemaBytes(l.tools.Offered(l.env.Enabled))) < limit {
+	if l.promptTokens(ctx, st.msgs) < limit {
 		st.lastPrompt, st.sentLen = 0, 0
 		return nil
 	}
@@ -95,7 +95,7 @@ func dropOutputs(msgs []model.Message, cut int) int {
 		if m.Role != model.RoleTool || len(m.Content) <= digestMin {
 			continue
 		}
-		m.Content = mech.Digest(names[m.ToolCallID], m.Content)
+		m.Content = mech.Digest(m.ToolCallID, names[m.ToolCallID], m.Content)
 		dropped++
 	}
 	return dropped
@@ -139,24 +139,43 @@ func transcriptOf(msgs []model.Message) string {
 }
 
 // schemaBytes counts the text of the tool schemas a request carries.
-func schemaBytes(list []model.Tool) int {
-	n := 0
+// schemaText lists the text of the tool schemas a request carries.
+func schemaText(list []model.Tool) string {
+	var b strings.Builder
 	for _, t := range list {
-		n += len(t.Name) + len(t.Description) + len(t.Parameters)
+		b.WriteString(t.Name + " " + t.Description + " " + string(t.Parameters) + "\n")
 	}
-	return n
+	return b.String()
 }
 
-// bytesOf counts the text a list of messages carries.
-func bytesOf(msgs []model.Message) int {
-	n := 0
+// messagesText lists the text a list of messages carries.
+func messagesText(msgs []model.Message) string {
+	var b strings.Builder
 	for _, m := range msgs {
-		n += len(m.Content)
+		b.WriteString(m.Content + "\n")
 		for _, c := range m.ToolCalls {
-			n += len(c.Name) + len(c.Arguments)
+			b.WriteString(c.Name + " " + c.Arguments + "\n")
 		}
 	}
-	return n
+	return b.String()
+}
+
+// promptTokens counts the tokens of a prompt: its messages, and the tool schemas that
+// every request carries.
+func (l *Loop) promptTokens(ctx context.Context, msgs []model.Message) int {
+	return l.tokensOf(ctx, messagesText(msgs)+schemaText(l.tools.Offered(l.env.Enabled)))
+}
+
+// tokensOf counts the tokens of a text with the engine's tokenizer (SPEC §7.2, RFC R5).
+// A client without one, or a tokenizer that fails, falls back to four bytes a token.
+func (l *Loop) tokensOf(ctx context.Context, text string) int {
+	if text == "" {
+		return 0
+	}
+	if n, err := l.client.Tokenize(ctx, text); err == nil {
+		return n
+	}
+	return mech.TokensOf(len(text))
 }
 
 func (l *Loop) contextTokens() int {
@@ -171,4 +190,20 @@ func (l *Loop) compactionAt() float64 {
 		return l.cfg.CompactionAt
 	}
 	return defaultCompactionAt
+}
+
+// fitWithoutTail handles a prompt that is too big while the tail holds too few
+// messages to compact. It digests every tool result but the last, and when the
+// messages still do not fit the window it reports an overflow, instead of sending a
+// prompt that the engine refuses (SPEC §4.4).
+func (l *Loop) fitWithoutTail(ctx context.Context, st *state, turn int) error {
+	if n := dropOutputs(st.msgs, len(st.msgs)-1); n > 0 {
+		l.write("mechanism", mechanismRecord{ID: mech.Compaction, Turn: turn, Event: "compact", Level: 1, Count: n})
+	}
+	size := l.promptTokens(ctx, st.msgs)
+	if size >= l.contextTokens() {
+		return fmt.Errorf("%w: the messages come to about %d tokens and the window holds %d", model.ErrContextFull, size, l.contextTokens())
+	}
+	st.lastPrompt, st.sentLen = 0, 0
+	return nil
 }

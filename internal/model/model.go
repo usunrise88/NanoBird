@@ -10,6 +10,10 @@ import (
 // back as SPEC §7.2 describes.
 var ErrUnsupported = errors.New("model: not supported by this backend")
 
+// ErrContextFull says that a prompt does not fit the context window of the engine. A
+// retry sends the same prompt, so the loop does not retry it (SPEC §4.4).
+var ErrContextFull = errors.New("model: the prompt does not fit the context window")
+
 // Role names the author of a message, with the names chat APIs use.
 type Role string
 

@@ -11,12 +11,14 @@ import (
 // default request carries only the core tools; the router adds routed categories
 // per task. Growth past it fails CI unless this constant is raised in the same
 // commit, with the reason. It went from 4,383 to 4,438 when the skills and tools
-// meta tools joined the core set.
+// meta tools joined the core set, and to 4,815 when tool_result joined it: the
+// digests of dropped tool outputs name an id that tool_result reads back, so that a
+// long task fits its window without losing the output (SPEC §4.4).
 //
 // Token counts are per model, not part of this pin (docs/ROADMAP.md). Measured on
 // 2026-10-26 with NanoLLM's tokenize endpoint, Gemma 4 E4B: 1,258 tokens with the
 // template and one user turn. Qwen3.5-4B, rendered through its own template: 1,575.
-const BudgetBytes = 4438
+const BudgetBytes = 4815
 
 // systemPrompt is English throughout (SPEC §5.13). The one verb takes the
 // shell name.
