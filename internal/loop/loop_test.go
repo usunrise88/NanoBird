@@ -399,3 +399,26 @@ func TestOverflowWithoutATailDigestsThenFitsOrStops(t *testing.T) {
 		t.Fatalf("error = %v, want an overflow", err)
 	}
 }
+
+// counting is a client whose tokenizer counts one token a character.
+type counting struct{ *fake.Client }
+
+func (c counting) Tokenize(_ context.Context, text string) (int, error) {
+	return len(text), nil
+}
+
+func TestTheEngineTokenizerDecidesWhetherThePromptFits(t *testing.T) {
+	big := strings.Repeat("line of tool output\n", 800)
+	cfg := defaultConfig()
+	cfg.ContextTokens = 10000
+	h := newHarness(t, t.TempDir(), cfg)
+	h.loop = New(counting{h.client}, tools.NewRegistry(tools.Builtins()), h.env, h.log, cfg)
+	st := &state{msgs: []model.Message{
+		{Role: model.RoleSystem, Content: "system"},
+		{Role: model.RoleUser, Content: "task"},
+		{Role: model.RoleTool, ToolCallID: "a", Content: big},
+	}, lastPrompt: 9500, sentLen: 3}
+	if err := h.loop.compactIfNeeded(context.Background(), 1, st); !errors.Is(err, model.ErrContextFull) {
+		t.Fatalf("error = %v, want an overflow: the engine tokenizer counts the output as more than the window", err)
+	}
+}
