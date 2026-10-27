@@ -50,7 +50,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, turn int, st *state) error {
 	}
 	cut := tailCut(st.msgs)
 	if cut <= 2 {
-		return nil
+		return l.fitWithoutTail(st, turn)
 	}
 	if n := dropOutputs(st.msgs, cut); n > 0 {
 		l.write("mechanism", mechanismRecord{ID: mech.Compaction, Turn: turn, Event: "compact", Level: 1, Count: n})
@@ -95,7 +95,7 @@ func dropOutputs(msgs []model.Message, cut int) int {
 		if m.Role != model.RoleTool || len(m.Content) <= digestMin {
 			continue
 		}
-		m.Content = mech.Digest(names[m.ToolCallID], m.Content)
+		m.Content = mech.Digest(m.ToolCallID, names[m.ToolCallID], m.Content)
 		dropped++
 	}
 	return dropped
@@ -171,4 +171,20 @@ func (l *Loop) compactionAt() float64 {
 		return l.cfg.CompactionAt
 	}
 	return defaultCompactionAt
+}
+
+// fitWithoutTail handles a prompt that is too big while the tail holds too few
+// messages to compact. It digests every tool result but the last, and when the
+// messages still do not fit the window it reports an overflow, instead of sending a
+// prompt that the engine refuses (SPEC §4.4).
+func (l *Loop) fitWithoutTail(st *state, turn int) error {
+	if n := dropOutputs(st.msgs, len(st.msgs)-1); n > 0 {
+		l.write("mechanism", mechanismRecord{ID: mech.Compaction, Turn: turn, Event: "compact", Level: 1, Count: n})
+	}
+	size := mech.TokensOf(bytesOf(st.msgs) + schemaBytes(l.tools.Offered(l.env.Enabled)))
+	if size >= l.contextTokens() {
+		return fmt.Errorf("%w: the messages come to about %d tokens and the window holds %d", model.ErrContextFull, size, l.contextTokens())
+	}
+	st.lastPrompt, st.sentLen = 0, 0
+	return nil
 }

@@ -225,10 +225,14 @@ func problemError(status int, r io.Reader) error {
 	var p struct {
 		Title  string `json:"title"`
 		Detail string `json:"detail"`
+		Code   string `json:"code"`
 	}
 	_ = json.NewDecoder(io.LimitReader(r, 64<<10)).Decode(&p)
 	if p.Detail == "" {
 		p.Detail = http.StatusText(status)
+	}
+	if p.Code == "context_overflow" {
+		return fmt.Errorf("%w: nanollm: %s (HTTP %d)", model.ErrContextFull, p.Detail, status)
 	}
 	return fmt.Errorf("nanollm: %s: %s (HTTP %d)", p.Title, p.Detail, status)
 }

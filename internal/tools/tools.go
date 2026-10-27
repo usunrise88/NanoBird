@@ -18,6 +18,9 @@ import (
 type Env struct {
 	// crawl counts the reads of each file in the task (SPEC §6.3).
 	crawl map[string]*crawlFile
+	// kept holds the full output of each tool call, by call id, while the session
+	// lives, so that tool_result can return a part of a dropped output (SPEC §4.4).
+	kept map[string]string
 	// Permit asks the client whether a call that a safety ring stopped may run
 	// (SPEC §5.11, §8.5). Nil means nobody can be asked, and the call is denied.
 	Permit func(ctx context.Context, p Permission) Answer
@@ -88,7 +91,7 @@ func NewExternal(name, description string, parameters json.RawMessage, call func
 // categories maps each built-in tool to its M1 category (SPEC §5.1).
 var categories = map[string]string{
 	"read_file": "core", "list_dir": "core", "create_file": "core", "edit_file": "core",
-	"run_shell": "core", "todo": "core", "skills": "core", "tools": "core", "finish": "core",
+	"run_shell": "core", "todo": "core", "skills": "core", "tools": "core", "finish": "core", "tool_result": "core",
 	"append_file": "files", "delete_file": "files", "rollback": "files",
 	"search_files": "code", "run_tests": "code",
 	"memory_store": "memory", "memory_recall": "memory",
@@ -100,7 +103,7 @@ func Builtins() []Tool {
 	list := []Tool{
 		readFileTool, listDirTool, createFileTool, editFileTool,
 		appendFileTool, deleteFileTool, rollbackTool, runShellTool,
-		todoTool, finishTool, skillsTool, toolsTool,
+		todoTool, finishTool, skillsTool, toolsTool, resultTool,
 		searchFilesTool, runTestsTool, memoryStoreTool, memoryRecallTool,
 	}
 	for i := range list {

@@ -218,6 +218,7 @@ func (l *Loop) run(ctx context.Context, st *state, first int) Result {
 			if call.Name == "todo" {
 				l.observer.Plan(l.env.Plan.Items)
 			}
+			l.env.Keep(call.ID, out.full)
 			st.msgs = append(st.msgs, toolMessage(call.ID, tools.Cap(out.full, l.cfg.ResultCapBytes)))
 		}
 		if l.err != nil {
@@ -277,6 +278,9 @@ func (l *Loop) generateWith(ctx context.Context, turn int, msgs []model.Message,
 			return r, nil
 		}
 		if ctx.Err() != nil {
+			return reply{}, err
+		}
+		if errors.Is(err, model.ErrContextFull) {
 			return reply{}, err
 		}
 		if !l.on(mech.Resilience) {
